@@ -27,6 +27,12 @@ const TENOR_GIFS = [
 // If the message contains any of these (game/community context), we do NOT trigger even if a trigger word appears
 const SAFE_CONTEXT_WORDS = new Set(['nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke'].map(w => w.toLowerCase()));
 
+// Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass)
+const SPAM_SLUR_TERMS = ['nigger', 'mein fuhrer', 'mein fuher', 'master race', 'kike', 'nigga'].map(w => w.toLowerCase());
+// Video reply: set VIDEO_PATH (local file) or VIDEO_URL (link), or add TMFIAR.mp4 to assets/ in repo
+const VIDEO_PATH = process.env.VIDEO_PATH || (process.platform === 'win32' ? 'C:\\Users\\serje\\Downloads\\TMFIAR.mp4' : 'assets/TMFIAR.mp4');
+const VIDEO_URL = process.env.VIDEO_URL;
+
 // Load trigger words (comma-separated, one line)
 function loadWords() {
   const path = process.env.WORDS_FILE || 'words.txt';
@@ -73,6 +79,23 @@ function hasSafeContext(text) {
   return false;
 }
 
+// Check if message contains any spam/slur term (case-insensitive)
+function hasSpamSlur(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  return SPAM_SLUR_TERMS.some(term => lower.includes(term));
+}
+
+// Get video attachment or URL for spam reply (returns { files } or { content } for message.reply)
+function getSpamVideoPayload() {
+  if (VIDEO_URL) return { content: VIDEO_URL };
+  const path = VIDEO_PATH;
+  if (path && fs.existsSync(path)) {
+    return { files: [{ attachment: path, name: 'TMFIAR.mp4' }] };
+  }
+  return { content: '(Video not configured: set VIDEO_PATH or VIDEO_URL, or add assets/TMFIAR.mp4)' };
+}
+
 // --- Discord bot ---
 const client = new Client({
   intents: [
@@ -90,6 +113,16 @@ client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (message.channelId !== TRIGGER_CHANNEL_ID) return; // only gv-general
   if (!message.content) return;
+
+  // Spam/slur: reply with video immediately (no safe-context bypass)
+  if (hasSpamSlur(message.content)) {
+    try {
+      await message.reply(getSpamVideoPayload());
+    } catch (err) {
+      console.error('Spam video reply failed:', err);
+    }
+    return;
+  }
 
   if (hasSafeContext(message.content)) return; // game/community context – don't trigger
   if (!hasTriggerWord(message.content)) return;
