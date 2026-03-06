@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: gv-legacy-general-mod
+    runtime: node
+    buildCommand: yarn
+    startCommand: yarn start
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+    healthCheckPath: /
