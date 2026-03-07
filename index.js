@@ -25,7 +25,10 @@ const TENOR_GIFS = [
 ];
 
 // If the message contains any of these (game/community context), we do NOT trigger even if a trigger word appears
-const SAFE_CONTEXT_WORDS = new Set(['nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke'].map(w => w.toLowerCase()));
+const SAFE_CONTEXT_WORDS = new Set([
+  'nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke',
+  'downvote', 'upvote', 'voted', 'voting', 'sub', // casual voting/sub (e.g. "voted downvote for the sub")
+].map(w => w.toLowerCase()));
 
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass)
 const SPAM_SLUR_TERMS = ['nigger', 'mein fuhrer', 'mein fuher', 'master race', 'kike', 'nigga'].map(w => w.toLowerCase());
