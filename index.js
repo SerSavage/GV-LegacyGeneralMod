@@ -62,13 +62,19 @@ function stripEmojis(text) {
     .trim();
 }
 
-// Check if message text contains any trigger word (case-insensitive), after stripping emojis
+// Escape special regex characters in a string so it can be used in RegExp
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Check if message text contains any trigger word as a whole word (case-insensitive), after stripping emojis.
+// Whole-word only so "king" doesn't match inside "fcking" or "asking".
 function hasTriggerWord(text) {
   const cleaned = stripEmojis(text);
   if (!cleaned) return false;
-  const lower = cleaned.toLowerCase();
   for (const word of triggerWords) {
-    if (lower.includes(word)) return true;
+    const re = new RegExp('\\b' + escapeRegex(word) + '\\b', 'i');
+    if (re.test(cleaned)) return true;
   }
   return false;
 }
