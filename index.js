@@ -6,8 +6,9 @@ const http = require('http');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
 
-// Only react to messages in this channel (gv-general)
-const TRIGGER_CHANNEL_ID = '1166738417539887218';
+// Only react to messages in this channel (gv-general). Set TRIGGER_CHANNEL_ID in .env if your "general" has a different ID.
+const TRIGGER_CHANNEL_ID = process.env.TRIGGER_CHANNEL_ID || '1166738417539887218';
+const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
@@ -114,8 +115,15 @@ client.once('ready', () => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-  if (message.channelId !== TRIGGER_CHANNEL_ID) return; // only gv-general
-  if (!message.content) return;
+
+  if (message.channelId !== TRIGGER_CHANNEL_ID) {
+    if (DEBUG) console.log(`[skip] channel ${message.channelId} !== ${TRIGGER_CHANNEL_ID}`);
+    return; // only gv-general
+  }
+  if (!message.content) {
+    if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
+    return;
+  }
 
   // Spam/slur: reply with video immediately (no safe-context bypass)
   if (hasSpamSlur(message.content)) {
@@ -127,8 +135,14 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  if (hasSafeContext(message.content)) return; // game/community context – don't trigger
-  if (!hasTriggerWord(message.content)) return;
+  if (hasSafeContext(message.content)) {
+    if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
+    return; // game/community context – don't trigger
+  }
+  if (!hasTriggerWord(message.content)) {
+    if (DEBUG) console.log('[skip] no trigger word in:', message.content.slice(0, 80));
+    return;
+  }
 
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
   try {
