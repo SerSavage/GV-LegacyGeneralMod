@@ -29,6 +29,7 @@ const TENOR_GIFS = [
 const SAFE_CONTEXT_WORDS = new Set([
   'nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke',
   'downvote', 'upvote', 'voted', 'voting', 'sub', // casual voting/sub (e.g. "voted downvote for the sub")
+  'grayward', 'gv', // community/game name (avoids "war" in "Grayward" triggering)
 ].map(w => w.toLowerCase()));
 
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass)
