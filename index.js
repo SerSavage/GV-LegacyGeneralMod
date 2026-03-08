@@ -32,8 +32,15 @@ const SAFE_CONTEXT_WORDS = new Set([
   'grayward', 'gv', // community/game name (avoids "war" in "Grayward" triggering)
 ].map(w => w.toLowerCase()));
 
-// Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass)
-const SPAM_SLUR_TERMS = ['nigger', 'mein fuhrer', 'mein fuher', 'master race', 'kike', 'nigga'].map(w => w.toLowerCase());
+// Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass).
+// Includes common evasive spellings users type to avoid filters.
+const SPAM_SLUR_TERMS = [
+  'nigger', 'nigga', 'niggas', 'niggers', 'nigers', 'nigas', 'niga', 'nigra', 'nigrah', 'niggar', 'niggur', 'nigguh', 'niggr', 'niger', 'nigor', 'nigar',
+  'n1gga', 'n1gger', 'n1ga', 'n1gas', 'n1ggas', 'n1ggers', 'ni99a', 'ni99er', 'n!gga', 'n!gger', 'n!ga', 'n!gg@', 'nigg@', 'nigg3r', 'n1gg3r', 'nigg4', 'n1gg4',
+  'niqqa', 'niqqer', 'n1qqa', 'n1qqer', 'n!qqa', 'n!qqer',
+  'mein fuhrer', 'mein fuher', 'mein furer', 'fuhrer', 'fuher', 'furer', 'master race', 'masterrace',
+  'kike', 'kikes', 'k1ke', 'k!ke', 'kyke', 'kik3', 'k1k3',
+].map(w => w.toLowerCase());
 // Video reply: set VIDEO_PATH (local file) or VIDEO_URL (link), or add TMFIAR.mp4 to assets/ in repo
 const VIDEO_PATH = process.env.VIDEO_PATH || (process.platform === 'win32' ? 'C:\\Users\\serje\\Downloads\\TMFIAR.mp4' : 'assets/TMFIAR.mp4');
 const VIDEO_URL = process.env.VIDEO_URL;
