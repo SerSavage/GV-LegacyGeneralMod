@@ -38,20 +38,29 @@ const SPAM_SLUR_TERMS = ['nigger', 'mein fuhrer', 'mein fuher', 'master race', '
 const VIDEO_PATH = process.env.VIDEO_PATH || (process.platform === 'win32' ? 'C:\\Users\\serje\\Downloads\\TMFIAR.mp4' : 'assets/TMFIAR.mp4');
 const VIDEO_URL = process.env.VIDEO_URL;
 
-// Load trigger words (comma-separated, one line)
+// Load trigger words from one or more files (comma-separated; multiple lines merged)
+function loadWordsFromFile(path) {
+  if (!fs.existsSync(path)) return [];
+  const content = fs.readFileSync(path, 'utf8');
+  return content
+    .split(/\r?\n/)
+    .flatMap(line => line.split(',').map(w => w.trim().toLowerCase()).filter(Boolean));
+}
+
 function loadWords() {
-  const path = process.env.WORDS_FILE || 'words.txt';
-  if (!fs.existsSync(path)) {
+  const mainPath = process.env.WORDS_FILE || 'words.txt';
+  const variantPath = process.env.WORDS_VARIANTS_FILE || 'words-variants.txt';
+  const words = loadWordsFromFile(mainPath);
+  if (words.length === 0 && !fs.existsSync(mainPath)) {
     console.error('words.txt not found. Set WORDS_FILE or add words.txt');
-    return new Set();
   }
-  const line = fs.readFileSync(path, 'utf8').trim();
-  const words = line.split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
-  return new Set(words);
+  const variants = loadWordsFromFile(variantPath);
+  const all = [...new Set([...words, ...variants])];
+  return new Set(all);
 }
 
 const triggerWords = loadWords();
-console.log(`Loaded ${triggerWords.size} trigger words.`);
+console.log(`Loaded ${triggerWords.size} trigger words (including synonyms, abbrevs, leet).`);
 
 // Strip emojis and Discord custom emoji text so we only match real words (e.g. 🙏 doesn't count as "pray")
 function stripEmojis(text) {
@@ -68,14 +77,31 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Check if message text contains any trigger word as a whole word (case-insensitive), after stripping emojis.
-// Whole-word only so "king" doesn't match inside "fcking" or "asking".
+// Normalize text so prolonged/leetspeak still matches trigger words:
+// - Collapse 2+ repeated letters (goooood → god, reeee → re)
+// - Replace common number-for-letter (0→o, 1→i, 3→e, 4→a, 5→s, 7→t, 8→b)
+function normalizeForMatch(text) {
+  if (!text || typeof text !== 'string') return '';
+  let t = text.toLowerCase();
+  t = t.replace(/(.)\1+/g, '$1');  // collapse repeated chars
+  t = t.replace(/0/g, 'o').replace(/1/g, 'i').replace(/3/g, 'e').replace(/4/g, 'a')
+       .replace(/5/g, 's').replace(/7/g, 't').replace(/8/g, 'b').replace(/9/g, 'g');
+  return t;
+}
+
+// Check if message text contains any trigger word as a whole word (case-insensitive).
+// Also checks normalized form so "goooood", "g0d", "pol1t1cs" match "god", "politics".
 function hasTriggerWord(text) {
   const cleaned = stripEmojis(text);
   if (!cleaned) return false;
+  const normalized = normalizeForMatch(cleaned);
   for (const word of triggerWords) {
     const re = new RegExp('\\b' + escapeRegex(word) + '\\b', 'i');
     if (re.test(cleaned)) return true;
+    // Match normalized message against normalized trigger (e.g. "g0d" in list vs "god" in msg, or "god" in list vs "gooood" in msg)
+    const wordNorm = normalizeForMatch(word);
+    const reNorm = new RegExp('\\b' + escapeRegex(wordNorm) + '\\b', 'i');
+    if (reNorm.test(normalized)) return true;
   }
   return false;
 }
