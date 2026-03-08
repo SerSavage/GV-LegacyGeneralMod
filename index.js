@@ -41,9 +41,15 @@ const SPAM_SLUR_TERMS = [
   'mein fuhrer', 'mein fuher', 'mein furer', 'fuhrer', 'fuher', 'furer', 'master race', 'masterrace',
   'kike', 'kikes', 'k1ke', 'k!ke', 'kyke', 'kik3', 'k1k3',
 ].map(w => w.toLowerCase());
-// Video reply: set VIDEO_PATH (local file) or VIDEO_URL (link), or add TMFIAR.mp4 to assets/ in repo
-const VIDEO_PATH = process.env.VIDEO_PATH || (process.platform === 'win32' ? 'C:\\Users\\serje\\Downloads\\TMFIAR.mp4' : 'assets/TMFIAR.mp4');
-const VIDEO_URL = process.env.VIDEO_URL;
+// Video reply: default is Streamable link so the bot always has access. Override with VIDEO_URL or VIDEO_PATH (local file).
+const DEFAULT_VIDEO_URL = 'https://streamable.com/e/mwfkm2';
+const VIDEO_URL = process.env.VIDEO_URL !== undefined && process.env.VIDEO_URL !== '' ? process.env.VIDEO_URL : DEFAULT_VIDEO_URL;
+const VIDEO_PATH = process.env.VIDEO_PATH || (() => {
+  const inRepo = 'assets/TMFIAR.mp4';
+  if (fs.existsSync(inRepo)) return inRepo;
+  if (process.platform === 'win32') return 'C:\\Users\\serje\\Downloads\\TMFIAR.mp4';
+  return inRepo;
+})();
 
 // Load trigger words from one or more files (comma-separated; multiple lines merged)
 function loadWordsFromFile(path) {
