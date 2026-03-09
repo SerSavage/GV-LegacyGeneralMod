@@ -8,9 +8,12 @@ const PORT = process.env.PORT || 10000;
 
 // Only react to messages in this channel (gv-general). Set TRIGGER_CHANNEL_ID in .env if your "general" has a different ID.
 const TRIGGER_CHANNEL_ID = process.env.TRIGGER_CHANNEL_ID || '1166738417539887218';
+const GV_GENERAL_CHANNEL_ID = process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID; // channel to post new-arrival video
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
+// When a user joins the server, post this video in gv-general (instead of relying on new-arrivals channel)
+const NEW_ARRIVAL_VIDEO_URL = process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu';
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
 
 // Multiple GIFs – one is picked at random when replying
@@ -150,6 +153,7 @@ function getSpamVideoPayload() {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers, // required for guildMemberAdd (enable "Server Members Intent" in Discord Developer Portal)
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -157,6 +161,21 @@ const client = new Client({
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
+});
+
+// When a user joins the server, post the welcome video in gv-general
+client.on('guildMemberAdd', async (member) => {
+  try {
+    const channel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
+    if (channel && channel.isTextBased()) {
+      await channel.send({
+        content: `Welcome, ${member.user.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
+      });
+      if (DEBUG) console.log(`[new-arrival] Posted welcome video for ${member.user.tag} in gv-general`);
+    }
+  } catch (err) {
+    console.error('New-arrival video post failed:', err);
+  }
 });
 
 client.on('messageCreate', async (message) => {
