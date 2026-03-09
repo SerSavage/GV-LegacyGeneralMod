@@ -30,11 +30,12 @@ const TENOR_GIFS = [
 // GIF for off-topic phrases (body/gender/race vulgar) – Mace Windu "it's settled then"
 const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 
-// If the message contains any of these (game/community context), we do NOT trigger even if a trigger word appears
+// If the message contains any of these (game/community context or benign hobby/life talk), we do NOT trigger
 const SAFE_CONTEXT_WORDS = new Set([
   'nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke',
   'downvote', 'upvote', 'voted', 'voting', 'sub', // casual voting/sub (e.g. "voted downvote for the sub")
   'grayward', 'gv', // community/game name (avoids "war" in "Grayward" triggering)
+  'interest', 'hobbies', 'share', 'experience', 'personal', // hobby/life context ("share an interest", "personal experience")
 ].map(w => w.toLowerCase()));
 
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass).
