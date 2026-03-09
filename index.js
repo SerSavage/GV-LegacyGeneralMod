@@ -16,6 +16,17 @@ const REDIRECT_CHANNEL_ID = '1168446788810842172';
 const NEW_ARRIVAL_VIDEO_URL = process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu';
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
 
+// "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
+const SOON_EMOJI = '<:Soon:1480665289715617842>';
+const SOON_TRIGGER_PHRASES = [
+  'gæm', 'gaem', 'gæm?', 'gaem?', 'game?', 'game up', 'game up?', 'when\'s the game', 'when is the game', 'is the game up',
+  'eta', 'eta?', 'any eta',
+  'servers open', 'servers open?', 'servers up', 'servers up?', 'server open', 'server open?', 'server up', 'server up?',
+  'when can we play', 'when can we play?', 'can we play', 'can we play?', 'can we play yet', 'when do servers open',
+  'are servers open', 'is the server open', 'servers open yet', 'open yet', 'when does the game open', 'is it open yet',
+  'server status', 'when will servers open', 'when are servers open', 'game open', 'game open?', 'play yet', 'when can i play',
+].map(p => p.toLowerCase());
+
 // Multiple GIFs – one is picked at random when replying
 const TENOR_GIFS = [
   'https://tenor.com/view/person-of-interest-hersh-i-think-we\'re-getting-off-topic-gif-13873963244115564618',
@@ -200,6 +211,14 @@ function hasOffTopicPhrase(text) {
   return OFF_TOPIC_PHRASES.some(phrase => lower.includes(phrase));
 }
 
+// Check if message is asking about game/servers/ETA (triggers "Soon" emoji reaction)
+function hasSoonTrigger(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase().trim();
+  if (!lower) return false;
+  return SOON_TRIGGER_PHRASES.some(phrase => lower.includes(phrase));
+}
+
 // Get video attachment or URL for spam reply (returns { files } or { content } for message.reply)
 function getSpamVideoPayload() {
   if (VIDEO_URL) return { content: VIDEO_URL };
@@ -208,6 +227,29 @@ function getSpamVideoPayload() {
     return { files: [{ attachment: path, name: 'TMFIAR.mp4' }] };
   }
   return { content: '(Video not configured: set VIDEO_PATH or VIDEO_URL, or add assets/TMFIAR.mp4)' };
+}
+
+// Delete message in gv-general and forward it to #off-topic with user tag and same GIF/video response
+async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
+  try {
+    await message.delete();
+  } catch (err) {
+    console.error('Could not delete message in gv-general (need Manage Messages):', err.message);
+  }
+  try {
+    const channel = await message.client.channels.fetch(REDIRECT_CHANNEL_ID);
+    if (!channel?.isTextBased()) return;
+    const movedText = message.content ? String(message.content).slice(0, 1500) : '(no text)';
+    const content = [
+      `${message.author.toString()} — moved from <#${TRIGGER_CHANNEL_ID}>:`,
+      `\`\`\`${movedText}${message.content && message.content.length > 1500 ? '…' : ''}\`\`\``,
+      REDIRECT_MESSAGE,
+      gifOrVideoUrl,
+    ].join('\n\n');
+    await channel.send({ content });
+  } catch (err) {
+    console.error('Forward to off-topic failed:', err);
+  }
 }
 
 // Slur reply tracking: first offense = GIF, repeated/spam = video. Entries reset after SLUR_TRACK_TTL_MS.
@@ -273,31 +315,30 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video
-  if (hasSpamSlur(message.content)) {
-    const userId = message.author.id;
-    const repeated = isRepeatedSlurOffender(userId);
-    recordSlurReply(userId);
+  // "Soon" trigger: Gæm?, ETA?, Servers open?, When can we play?, etc. — react with Soon emoji only (no delete/forward)
+  if (hasSoonTrigger(message.content)) {
     try {
-      if (repeated) {
-        await message.reply(getSpamVideoPayload());
-      } else {
-        const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-        await message.reply({ content: REDIRECT_MESSAGE + '\n\n' + randomGif });
-      }
+      await message.react(SOON_EMOJI);
     } catch (err) {
-      console.error('Slur reply failed:', err);
+      console.error('Soon emoji reaction failed (emoji must exist in this server):', err.message);
     }
     return;
   }
 
-  // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF + redirect to off-topic
+  // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video. Delete in gv-general, forward to #off-topic.
+  if (hasSpamSlur(message.content)) {
+    const userId = message.author.id;
+    const repeated = isRepeatedSlurOffender(userId);
+    recordSlurReply(userId);
+    const videoPayload = getSpamVideoPayload();
+    const gifOrVideoUrl = repeated ? (videoPayload.content || VIDEO_URL) : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+    await deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl);
+    return;
+  }
+
+  // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, forward to #off-topic.
   if (hasOffTopicPhrase(message.content)) {
-    try {
-      await message.reply({ content: REDIRECT_MESSAGE + '\n\n' + OFF_TOPIC_GIF });
-    } catch (err) {
-      console.error('Off-topic reply failed:', err);
-    }
+    await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
     return;
   }
 
@@ -310,14 +351,9 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Religion/politics: random GIF. Delete in gv-general, forward to #off-topic.
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-  try {
-    await message.reply({
-      content: REDIRECT_MESSAGE + '\n\n' + randomGif,
-    });
-  } catch (err) {
-    console.error('Reply failed:', err);
-  }
+  await deleteInGeneralAndForwardToOffTopic(message, randomGif);
 });
 
 // --- Health check server (for Render: keep service alive / readiness) ---
