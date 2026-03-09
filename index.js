@@ -27,6 +27,8 @@ const TENOR_GIFS = [
   'https://tenor.com/view/you-better-move-girl-tracy-jordan-30rock-hurry-move-it-gif-19248847',
   'https://tenor.com/view/days-of-our-lives-dool-gabi-hernandez-dimera-move-on-already-camila-banus-gif-19360973',
 ];
+// GIF for off-topic phrases (body/gender/race vulgar) – Mace Windu "it's settled then"
+const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 
 // If the message contains any of these (game/community context), we do NOT trigger even if a trigger word appears
 const SAFE_CONTEXT_WORDS = new Set([
@@ -44,6 +46,57 @@ const SPAM_SLUR_TERMS = [
   'mein fuhrer', 'mein fuher', 'mein furer', 'fuhrer', 'fuher', 'furer', 'master race', 'masterrace',
   'kike', 'kikes', 'k1ke', 'k!ke', 'kyke', 'kik3', 'k1k3',
 ].map(w => w.toLowerCase());
+
+// Off-topic phrases – vulgar/objectifying by body, gender, race, nationality. Bot replies with GIF + redirect (no safe-context bypass)
+function buildOffTopicPhrases() {
+  const body = ['fat', 'skinny', 'thick', 'curvy', 'chubby', 'bbw', 'petite'];
+  const person = ['chick', 'chicks', 'guy', 'guys', 'girl', 'girls', 'dude', 'dudes', 'man', 'men', 'woman', 'women', 'boy', 'boys', 'babe', 'babes'];
+  const raceNat = ['black', 'white', 'asian', 'latina', 'latino', 'mexican', 'indian', 'russian', 'french', 'british', 'italian', 'spanish', 'korean', 'japanese', 'chinese', 'arab', 'persian', 'irish', 'german', 'brazilian', 'colombian', 'thai', 'vietnamese', 'filipina', 'filipino', 'puerto rican', 'dominican', 'cuban', 'egyptian', 'turkish', 'polish', 'dutch', 'swedish', 'blonde', 'brunette', 'redhead'];
+  const phrases = new Set();
+
+  const add = (p) => { if (p && p.length > 1) phrases.add(p.toLowerCase()); };
+
+  // "fuck a [body] [person]", "fuck [body] [person]", "[body] [person]"
+  for (const b of body) {
+    for (const p of person) {
+      add(`fuck a ${b} ${p}`);
+      add(`fuck ${b} ${p}`);
+      add(`${b} ${p}`);
+    }
+    add(`fuck a ${b}`);
+    add(`fuck ${b}`);
+  }
+  // "fuck a [race/nat] [person]", "fuck [race/nat] [person]", "[race/nat] [person]" (vulgar objectifying)
+  for (const r of raceNat) {
+    for (const p of person) {
+      add(`fuck a ${r} ${p}`);
+      add(`fuck ${r} ${p}`);
+      add(`${r} ${p}`);
+    }
+    add(`fuck a ${r}`);
+    add(`fuck ${r}`);
+  }
+  // "lets fuck a ...", "let's fuck a ..."
+  add('lets fuck a');
+  add('let\'s fuck a');
+  add('lets fuck');
+  add('let\'s fuck');
+  // common standalone vulgar off-topic
+  add('fuck a fat');
+  add('fuck fat');
+  add('fuck a skinny');
+  add('fuck a thick');
+  add('fuck a black');
+  add('fuck a white');
+  add('fuck an asian');
+  add('fuck a latina');
+  add('fuck a latino');
+
+  return [...phrases];
+}
+const OFF_TOPIC_PHRASES = buildOffTopicPhrases();
+console.log(`Off-topic phrases: ${OFF_TOPIC_PHRASES.length} (body/gender/race/nationality variants).`);
+
 // Video reply: default is Streamable link so the bot always has access. Override with VIDEO_URL or VIDEO_PATH (local file).
 const DEFAULT_VIDEO_URL = 'https://streamable.com/e/mwfkm2';
 const VIDEO_URL = process.env.VIDEO_URL !== undefined && process.env.VIDEO_URL !== '' ? process.env.VIDEO_URL : DEFAULT_VIDEO_URL;
@@ -139,6 +192,13 @@ function hasSpamSlur(text) {
   return SPAM_SLUR_TERMS.some(term => lower.includes(term));
 }
 
+// Check if message contains any off-topic phrase (case-insensitive substring)
+function hasOffTopicPhrase(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  return OFF_TOPIC_PHRASES.some(phrase => lower.includes(phrase));
+}
+
 // Get video attachment or URL for spam reply (returns { files } or { content } for message.reply)
 function getSpamVideoPayload() {
   if (VIDEO_URL) return { content: VIDEO_URL };
@@ -147,6 +207,28 @@ function getSpamVideoPayload() {
     return { files: [{ attachment: path, name: 'TMFIAR.mp4' }] };
   }
   return { content: '(Video not configured: set VIDEO_PATH or VIDEO_URL, or add assets/TMFIAR.mp4)' };
+}
+
+// Slur reply tracking: first offense = GIF, repeated/spam = video. Entries reset after SLUR_TRACK_TTL_MS.
+const SLUR_TRACK_TTL_MS = 60 * 60 * 1000; // 1 hour
+const slurReplyByUser = new Map(); // userId -> { count: number, lastTs: number }
+function isRepeatedSlurOffender(userId) {
+  const now = Date.now();
+  const entry = slurReplyByUser.get(userId);
+  if (!entry) return false;
+  if (now - entry.lastTs > SLUR_TRACK_TTL_MS) {
+    slurReplyByUser.delete(userId);
+    return false;
+  }
+  return entry.count >= 1; // already replied at least once in window → treat as repeated
+}
+function recordSlurReply(userId) {
+  const now = Date.now();
+  const entry = slurReplyByUser.get(userId) || { count: 0, lastTs: 0 };
+  if (now - entry.lastTs > SLUR_TRACK_TTL_MS) entry.count = 0;
+  entry.count++;
+  entry.lastTs = now;
+  slurReplyByUser.set(userId, entry);
 }
 
 // --- Discord bot ---
@@ -190,12 +272,30 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Spam/slur: reply with video immediately (no safe-context bypass)
+  // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video
   if (hasSpamSlur(message.content)) {
+    const userId = message.author.id;
+    const repeated = isRepeatedSlurOffender(userId);
+    recordSlurReply(userId);
     try {
-      await message.reply(getSpamVideoPayload());
+      if (repeated) {
+        await message.reply(getSpamVideoPayload());
+      } else {
+        const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+        await message.reply({ content: REDIRECT_MESSAGE + '\n\n' + randomGif });
+      }
     } catch (err) {
-      console.error('Spam video reply failed:', err);
+      console.error('Slur reply failed:', err);
+    }
+    return;
+  }
+
+  // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF + redirect to off-topic
+  if (hasOffTopicPhrase(message.content)) {
+    try {
+      await message.reply({ content: REDIRECT_MESSAGE + '\n\n' + OFF_TOPIC_GIF });
+    } catch (err) {
+      console.error('Off-topic reply failed:', err);
     }
     return;
   }
