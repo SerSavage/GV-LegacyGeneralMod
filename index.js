@@ -50,6 +50,7 @@ const SAFE_CONTEXT_WORDS = new Set([
   'another round', 'round in', // gaming/activity ("another round in JC" = game/server, not religion)
   'emperor', 'represent', // lore/roleplay ("represent'n' the emperor" = in-universe, not politics)
   'jc', 'jarnclan', 'jarn', // JC = JarnClan (game/clan), not Jesus Christ
+  'destiny', // game/lore ("destiny of the player base", nation choice), not religion
 ].map(w => w.toLowerCase()));
 
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass).
