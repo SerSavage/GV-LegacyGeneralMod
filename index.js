@@ -47,6 +47,8 @@ const SAFE_CONTEXT_WORDS = new Set([
   'downvote', 'upvote', 'voted', 'voting', 'sub', // casual voting/sub (e.g. "voted downvote for the sub")
   'grayward', 'gv', // community/game name (avoids "war" in "Grayward" triggering)
   'interest', 'hobbies', 'share', 'experience', 'personal', // hobby/life context ("share an interest", "personal experience")
+  'another round', 'round in', // gaming/activity ("another round in JC" = game/server, not religion)
+  'emperor', 'represent', // lore/roleplay ("represent'n' the emperor" = in-universe, not politics)
 ].map(w => w.toLowerCase()));
 
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass).
