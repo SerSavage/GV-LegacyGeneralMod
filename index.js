@@ -24,8 +24,14 @@ const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '11667756
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
 const NEW_USER_JOIN_DAYS = Math.max(0, parseInt(process.env.NEW_USER_JOIN_DAYS, 10) || 7); // only welcome if joined within this many days
 const NEW_USER_JOIN_WINDOW_MS = NEW_USER_JOIN_DAYS * 24 * 60 * 60 * 1000;
-// Welcome video when user joins or gets their role
-const NEW_ARRIVAL_VIDEO_URL = process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu';
+// Welcome videos when user joins or gets their role — one is picked at random (add more via env NEW_ARRIVAL_VIDEO_URLS comma-separated, or use defaults)
+const NEW_ARRIVAL_VIDEO_URLS = (process.env.NEW_ARRIVAL_VIDEO_URLS || process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu,https://streamable.com/63lazw')
+  .split(',')
+  .map(u => u.trim())
+  .filter(Boolean);
+function getRandomWelcomeVideoUrl() {
+  return NEW_ARRIVAL_VIDEO_URLS[Math.floor(Math.random() * NEW_ARRIVAL_VIDEO_URLS.length)] || 'https://streamable.com/vxi8bu';
+}
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
@@ -58,7 +64,7 @@ const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 // • Off-topic phrases   → OFF_TOPIC_GIF (Mace Windu only)
 // • Religion/politics  → random TENOR_GIF
 // • Soon (Gæm?, ETA?)  → SOON_EMOJI reaction only (no delete/forward)
-// • New member welcome → NEW_ARRIVAL_VIDEO_URL (Knights with sub streamable.com/vxi8bu) in gv-general, user mentioned by ID
+// • New member welcome → random from NEW_ARRIVAL_VIDEO_URLS (e.g. streamable.com/vxi8bu, streamable.com/63lazw) in gv-general, user mentioned by ID
 
 // If the message contains any of these (game/community context or benign hobby/life talk), we do NOT trigger
 const SAFE_CONTEXT_WORDS = new Set([
@@ -126,6 +132,9 @@ function buildOffTopicPhrases() {
   add('fuck an asian');
   add('fuck a latina');
   add('fuck a latino');
+  add('inbreed');
+  add('inbred');
+  add('fuck your siblings');
 
   return [...phrases];
 }
@@ -322,7 +331,7 @@ client.on('guildMemberAdd', async (member) => {
     const channel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
     if (channel && channel.isTextBased()) {
       await channel.send({
-        content: `Welcome, ${member.user.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
+        content: `Welcome, ${member.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
       });
       if (DEBUG) console.log(`[new-arrival] Posted welcome video for ${member.user.tag} in gv-general`);
     }
@@ -349,14 +358,14 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     const newArrivalsChannel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (newArrivalsChannel?.isTextBased()) {
       await newArrivalsChannel.send({
-        content: `Welcome ${newMember.user.toString()} — they've chosen their role for the first time!\n${NEW_ARRIVAL_VIDEO_URL}`,
+        content: `Welcome ${newMember.user.toString()} — they've chosen their role for the first time!\n${getRandomWelcomeVideoUrl()}`,
       });
       if (DEBUG) console.log(`[role-assign] Notified new-arrivals for ${newMember.user.tag} (first nation role)`);
     }
     const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
     if (generalChannel?.isTextBased()) {
       await generalChannel.send({
-        content: `Welcome, ${newMember.user.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
+        content: `Welcome, ${newMember.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
       });
       if (DEBUG) console.log(`[role-assign] Welcome posted in gv-general for ${newMember.user.tag}`);
     }
@@ -384,7 +393,7 @@ client.on('messageCreate', async (message) => {
         const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
         if (generalChannel?.isTextBased()) {
           await generalChannel.send({
-            content: `Welcome, ${userToWelcome.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
+            content: `Welcome, ${userToWelcome.toString()}!\n${getRandomWelcomeVideoUrl()}`,
           });
           if (DEBUG) console.log(`[admin-join] Welcomed ${userToWelcome.tag} in gv-general from admin channel notification`);
         }
