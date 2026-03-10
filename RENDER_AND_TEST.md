@@ -30,6 +30,39 @@ In Render: your service → **Environment** tab.
 
 ---
 
+## Gateway intents this bot uses (from [Discord Gateway docs](https://docs.discord.com/developers/events/gateway-events))
+
+| Event / feature | Intent required | In Developer Portal |
+|------------------|------------------|----------------------|
+| `messageCreate` + reading message text | **MESSAGE CONTENT** (privileged) | “MESSAGE CONTENT INTENT” → ON |
+| `guildMemberAdd` / `guildMemberUpdate` | **GUILD MEMBERS** (privileged) | “SERVER MEMBERS INTENT” → ON |
+| Basic guild + messages | Guilds, Guild Messages | Default (no toggle) |
+
+You don’t need any other gateway events from the docs; the code already requests these intents.
+
+---
+
+## If Bot / Intents settings reset when you refresh
+
+Some users see Privileged Gateway Intents (or other Bot settings) revert after refresh. Try:
+
+1. **Save correctly**  
+   On the **Bot** page, scroll to the **very bottom**, click **“Save Changes”** (green button), wait **5–10 seconds**, then refresh.
+
+2. **Browser**  
+   Try another browser or an **incognito/private** window in case of cache or extensions.
+
+3. **One change at a time**  
+   Turn **one** intent ON → Save → wait → refresh. Then turn the other ON → Save again.
+
+4. **Confirm the right app**  
+   Check the app name/icon in the top bar; if you have several apps, make sure you’re editing the one the bot uses.
+
+5. **Re-invite the bot**  
+   Bot permissions in the **invite URL** (OAuth2 → URL Generator) are not stored like intents. If you only changed the invite link’s “Bot Permissions”, that doesn’t persist in the same way; regenerate the link and re-invite the bot with “Administrator” (or the scopes you need) so the bot has permission in the server. Intents are still toggled under **Bot** → **Privileged Gateway Intents**.
+
+---
+
 ## Quick test: admin-join welcome
 
 This checks that when the admin channel gets a “user joined” style message, the bot posts the welcome in gv-general.

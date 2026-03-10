@@ -6,7 +6,8 @@ const http = require('http');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
 
-// Only react to messages in this channel (gv-general). Set TRIGGER_CHANNEL_ID in .env if your "general" has a different ID.
+// --- Channel IDs ---
+// Trigger channel = gv-general (bot listens here for slurs, off-topic, religion/politics, Soon).
 const TRIGGER_CHANNEL_ID = String(process.env.TRIGGER_CHANNEL_ID || '1166738417539887218');
 const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // channel to post new-arrival video
 // Admin channel that gets join notifications — when we see a join message here, we welcome that user in gv-general (fallback if guildMemberAdd doesn't fire)
@@ -47,6 +48,13 @@ const TENOR_GIFS = [
 ];
 // GIF for off-topic phrases (body/gender/race vulgar) – Mace Windu "it's settled then"
 const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
+
+// Reference: which media goes with which trigger (all in gv-general → delete + forward to #off-topic unless noted)
+// • Slurs (first time)  → random TENOR_GIF  | Slurs (repeated in 1h) → VIDEO_URL (TMFIAR streamable.com/e/mwfkm2)
+// • Off-topic phrases   → OFF_TOPIC_GIF (Mace Windu only)
+// • Religion/politics  → random TENOR_GIF
+// • Soon (Gæm?, ETA?)  → SOON_EMOJI reaction only (no delete/forward)
+// • New member welcome → NEW_ARRIVAL_VIDEO_URL (Knights with sub streamable.com/vxi8bu) in gv-general, user mentioned by ID
 
 // If the message contains any of these (game/community context or benign hobby/life talk), we do NOT trigger
 const SAFE_CONTEXT_WORDS = new Set([
