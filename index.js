@@ -363,23 +363,26 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 });
 
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-
   const channelId = String(message.channelId);
 
-  // Admin channel: if this message looks like a join notification (mentions a user + "joined"/"welcome"), welcome that user in gv-general
+  // Admin channel: Carl-bot "Member joined" (or any message with "joined"/"welcome") — welcome that user in gv-general (we do this even for bot messages so we see Carl-bot's join logs)
   if (channelId === ADMIN_JOIN_CHANNEL_ID) {
-    const content = (message.content || '').toLowerCase();
-    const hasJoinKeyword = /\b(joined|welcome|just joined)\b/i.test(content) || content.includes('joined the server');
-    const mentionedUser = message.mentions?.users?.first();
-    if (hasJoinKeyword && mentionedUser) {
+    const rawContent = message.content || '';
+    const content = rawContent.toLowerCase();
+    const hasJoinKeyword = /\b(member joined|joined|welcome|just joined)\b/i.test(content) || content.includes('joined the server');
+    let userToWelcome = message.mentions?.users?.first();
+    if (!userToWelcome && hasJoinKeyword) {
+      const idMatch = rawContent.match(/ID:\s*(\d{17,19})/i);
+      if (idMatch) userToWelcome = { toString: () => `<@${idMatch[1]}>`, tag: idMatch[1] };
+    }
+    if (hasJoinKeyword && userToWelcome) {
       try {
         const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
         if (generalChannel?.isTextBased()) {
           await generalChannel.send({
-            content: `Welcome, ${mentionedUser.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
+            content: `Welcome, ${userToWelcome.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
           });
-          if (DEBUG) console.log(`[admin-join] Welcomed ${mentionedUser.tag} in gv-general from admin channel notification`);
+          if (DEBUG) console.log(`[admin-join] Welcomed ${userToWelcome.tag} in gv-general from admin channel notification`);
         }
       } catch (err) {
         console.error('Admin-join welcome failed:', err);
@@ -387,6 +390,8 @@ client.on('messageCreate', async (message) => {
     }
     return; // don't run gv-general triggers for admin channel
   }
+
+  if (message.author.bot) return; // from here on we only react to user messages in gv-general
 
   if (channelId !== TRIGGER_CHANNEL_ID) {
     if (DEBUG) console.log(`[skip] channel ${channelId} !== ${TRIGGER_CHANNEL_ID}`);
