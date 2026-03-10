@@ -14,7 +14,7 @@ const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
-const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628']);
+const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
 const NEW_USER_JOIN_DAYS = Math.max(0, parseInt(process.env.NEW_USER_JOIN_DAYS, 10) || 7); // only welcome if joined within this many days
 const NEW_USER_JOIN_WINDOW_MS = NEW_USER_JOIN_DAYS * 24 * 60 * 60 * 1000;
 // Welcome video when user joins or gets their role
