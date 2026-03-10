@@ -21,6 +21,7 @@ In Render: your service → **Environment** tab.
 | TRIGGER_CHANNEL_ID | `1166738417539887218` | No (default is gv-general) |
 | GV_GENERAL_CHANNEL_ID | `1166738417539887218` | No (default = same as trigger) |
 | ADMIN_JOIN_CHANNEL_ID | `1166746316999757864` | No (default = admin) |
+| **OFFTOPIC_TO_GENERAL_USER_ID** | (Discord user ID) | No — if set, that user’s image/GIF posts in off-topic are moved to gv-general. **Set in Render only; do not put real IDs in the repo.** |
 | REDIRECT_CHANNEL_ID | (hardcoded in code as 1168446788810842172) | — |
 | DEBUG | `1` | No (set to `1` only when debugging) |
 

@@ -15,6 +15,10 @@ const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '11667
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
+// User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
+const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
+const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
+const IMAGE_CONTENT_TYPES = /^image\//;
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
@@ -392,6 +396,28 @@ client.on('messageCreate', async (message) => {
   }
 
   if (message.author.bot) return; // from here on we only react to user messages in gv-general
+
+  // Off-topic → gv-general: move this user's image/GIF posts only (delete in off-topic, re-post in gv-general with no message)
+  if (OFFTOPIC_TO_GENERAL_USER_ID && channelId === REDIRECT_CHANNEL_ID && message.author.id === OFFTOPIC_TO_GENERAL_USER_ID && message.attachments?.size > 0) {
+    const imageAttachments = message.attachments.filter(
+      a => IMAGE_CONTENT_TYPES.test(a.contentType || '') || IMAGE_EXTENSIONS.test(a.name || '')
+    );
+    if (imageAttachments.size > 0) {
+      try {
+        await message.delete();
+        const generalChannel = await message.client.channels.fetch(GV_GENERAL_CHANNEL_ID);
+        if (generalChannel?.isTextBased()) {
+          await generalChannel.send({
+            files: imageAttachments.map(a => a.url),
+          });
+          if (DEBUG) console.log(`[offtopic→general] Moved ${imageAttachments.size} image(s) from ${message.author.tag}`);
+        }
+      } catch (err) {
+        console.error('Off-topic → gv-general move failed:', err);
+      }
+    }
+    return;
+  }
 
   if (channelId !== TRIGGER_CHANNEL_ID) {
     if (DEBUG) console.log(`[skip] channel ${channelId} !== ${TRIGGER_CHANNEL_ID}`);
