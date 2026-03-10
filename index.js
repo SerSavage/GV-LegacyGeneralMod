@@ -12,7 +12,12 @@ const GV_GENERAL_CHANNEL_ID = process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANN
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
-// When a user joins the server, post this video in gv-general (instead of relying on new-arrivals channel)
+const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
+// Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
+const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628']);
+const NEW_USER_JOIN_DAYS = Math.max(0, parseInt(process.env.NEW_USER_JOIN_DAYS, 10) || 7); // only welcome if joined within this many days
+const NEW_USER_JOIN_WINDOW_MS = NEW_USER_JOIN_DAYS * 24 * 60 * 60 * 1000;
+// Welcome video when user joins or gets their role
 const NEW_ARRIVAL_VIDEO_URL = process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu';
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
 
@@ -256,6 +261,9 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
   }
 }
 
+// Track users we've already welcomed for picking a nation role (first-time only)
+const welcomedForNationRoleByUser = new Set();
+
 // Slur reply tracking: first offense = GIF, repeated/spam = video. Entries reset after SLUR_TRACK_TTL_MS.
 const SLUR_TRACK_TTL_MS = 60 * 60 * 1000; // 1 hour
 const slurReplyByUser = new Map(); // userId -> { count: number, lastTs: number }
@@ -304,6 +312,41 @@ client.on('guildMemberAdd', async (member) => {
     }
   } catch (err) {
     console.error('New-arrival video post failed:', err);
+  }
+});
+
+// When a new user picks one of the nation roles for the first time: notify new-arrivals and welcome in gv-general
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (newMember.roles.cache.size <= oldMember.roles.cache.size) return; // no role added
+  const addedRoleIds = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
+  const pickedNationRole = [...addedRoleIds.keys()].some(id => WELCOME_ROLE_IDS.has(id));
+  if (!pickedNationRole) return;
+
+  const userId = newMember.user.id;
+  if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role (e.g. switching)
+
+  const joinedAt = newMember.joinedAt ? newMember.joinedAt.getTime() : 0;
+  if (Date.now() - joinedAt > NEW_USER_JOIN_WINDOW_MS) return; // not a "new" user (joined too long ago)
+
+  welcomedForNationRoleByUser.add(userId);
+  try {
+    const newArrivalsChannel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
+    if (newArrivalsChannel?.isTextBased()) {
+      await newArrivalsChannel.send({
+        content: `Welcome ${newMember.user.toString()} — they've chosen their role for the first time!\n${NEW_ARRIVAL_VIDEO_URL}`,
+      });
+      if (DEBUG) console.log(`[role-assign] Notified new-arrivals for ${newMember.user.tag} (first nation role)`);
+    }
+    const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
+    if (generalChannel?.isTextBased()) {
+      await generalChannel.send({
+        content: `Welcome, ${newMember.user.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
+      });
+      if (DEBUG) console.log(`[role-assign] Welcome posted in gv-general for ${newMember.user.tag}`);
+    }
+  } catch (err) {
+    console.error('Role-assign welcome failed:', err);
+    welcomedForNationRoleByUser.delete(userId); // allow retry
   }
 });
 
