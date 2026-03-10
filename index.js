@@ -7,8 +7,10 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
 
 // Only react to messages in this channel (gv-general). Set TRIGGER_CHANNEL_ID in .env if your "general" has a different ID.
-const TRIGGER_CHANNEL_ID = process.env.TRIGGER_CHANNEL_ID || '1166738417539887218';
-const GV_GENERAL_CHANNEL_ID = process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID; // channel to post new-arrival video
+const TRIGGER_CHANNEL_ID = String(process.env.TRIGGER_CHANNEL_ID || '1166738417539887218');
+const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // channel to post new-arrival video
+// Admin channel that gets join notifications — when we see a join message here, we welcome that user in gv-general (fallback if guildMemberAdd doesn't fire)
+const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
@@ -298,6 +300,8 @@ const client = new Client({
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
+  console.log(`Admin join fallback channel: ${ADMIN_JOIN_CHANNEL_ID}`);
 });
 
 // When a user joins the server, post the welcome video in gv-general
@@ -353,8 +357,31 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
-  if (message.channelId !== TRIGGER_CHANNEL_ID) {
-    if (DEBUG) console.log(`[skip] channel ${message.channelId} !== ${TRIGGER_CHANNEL_ID}`);
+  const channelId = String(message.channelId);
+
+  // Admin channel: if this message looks like a join notification (mentions a user + "joined"/"welcome"), welcome that user in gv-general
+  if (channelId === ADMIN_JOIN_CHANNEL_ID) {
+    const content = (message.content || '').toLowerCase();
+    const hasJoinKeyword = /\b(joined|welcome|just joined)\b/i.test(content) || content.includes('joined the server');
+    const mentionedUser = message.mentions?.users?.first();
+    if (hasJoinKeyword && mentionedUser) {
+      try {
+        const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
+        if (generalChannel?.isTextBased()) {
+          await generalChannel.send({
+            content: `Welcome, ${mentionedUser.toString()}!\n${NEW_ARRIVAL_VIDEO_URL}`,
+          });
+          if (DEBUG) console.log(`[admin-join] Welcomed ${mentionedUser.tag} in gv-general from admin channel notification`);
+        }
+      } catch (err) {
+        console.error('Admin-join welcome failed:', err);
+      }
+    }
+    return; // don't run gv-general triggers for admin channel
+  }
+
+  if (channelId !== TRIGGER_CHANNEL_ID) {
+    if (DEBUG) console.log(`[skip] channel ${channelId} !== ${TRIGGER_CHANNEL_ID}`);
     return; // only gv-general
   }
   if (!message.content) {
