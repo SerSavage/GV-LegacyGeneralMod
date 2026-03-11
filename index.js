@@ -193,6 +193,7 @@ const SAFE_CONTEXT_BASE = [
   'jc', 'jarnclan', 'jarn',
   'destiny',
   'savage', // common in usernames (e.g. Ser-UNBAN-THE-COMMUNITY-Savage) and casual use – don't trigger religion/politics
+  'dipshit', // mod-style scolding (e.g. "for him dipshit") – don't trigger
   // Gloria Victis Wiki – game/lore so "war", "empire", "worship" etc. don't trigger
   'state of war', 'gloria victis', 'black eye games',
   'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismirs', 'sangmar', 'sangarians',
