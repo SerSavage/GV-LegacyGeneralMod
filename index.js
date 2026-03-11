@@ -17,8 +17,11 @@ const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
 // User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
+// User ID whose media (GIFs, images, videos, tenor.com links) with religious/political content in the message text get moved to #off-topic
+const MEDIA_RELIGION_OFFTOPIC_USER_ID = process.env.MEDIA_RELIGION_OFFTOPIC_USER_ID || '1107129004642799616';
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
 const IMAGE_CONTENT_TYPES = /^image\//;
+const VIDEO_CONTENT_TYPES = /^video\//;
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
@@ -36,14 +39,106 @@ const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
 const SOON_EMOJI = '<:Soon:1480665289715617842>';
-const SOON_TRIGGER_PHRASES = [
-  'gæm', 'gaem', 'gæm?', 'gaem?', 'game?', 'game up', 'game up?', 'when\'s the game', 'when is the game', 'is the game up',
-  'eta', 'eta?', 'any eta',
-  'servers open', 'servers open?', 'servers up', 'servers up?', 'server open', 'server open?', 'server up', 'server up?',
-  'when can we play', 'when can we play?', 'can we play', 'can we play?', 'can we play yet', 'when do servers open',
-  'are servers open', 'is the server open', 'servers open yet', 'open yet', 'when does the game open', 'is it open yet',
-  'server status', 'when will servers open', 'when are servers open', 'game open', 'game open?', 'play yet', 'when can i play',
-].map(p => p.toLowerCase());
+function buildSoonTriggerPhrases() {
+  const phrases = new Set();
+  const add = (p) => { if (p && p.length > 0) phrases.add(p.toLowerCase()); };
+
+  // game / gaem / gæm variants
+  ['game', 'gaem', 'gæm', 'gamm', 'gaeme'].forEach(g => {
+    add(g); add(g + '?'); add(g + ' up'); add(g + ' up?'); add(g + ' open'); add(g + ' open?');
+    add('when ' + g); add('when\'s ' + g); add('when is ' + g); add('when\'s the ' + g); add('when is the ' + g);
+    add('is the ' + g + ' up'); add('is ' + g + ' up'); add('is ' + g + ' up?'); add('is the ' + g + ' out');
+    add(g + ' when'); add(g + ' when?'); add('when does ' + g + ' open'); add('when will ' + g + ' open');
+    add('when can we play ' + g); add('when can i play ' + g); add('when can we play'); add('when can i play');
+  });
+
+  // server(s) open/up/live
+  ['server', 'servers', 'servr', 'servrs'].forEach(s => {
+    add(s + ' open'); add(s + ' open?'); add(s + ' up'); add(s + ' up?'); add(s + ' live'); add(s + ' live?');
+    add('is ' + s + ' open'); add('are ' + s + ' open'); add('is the ' + s + ' open'); add('are the ' + s + ' open');
+    add(s + ' open yet'); add(s + ' up yet'); add('when do ' + s + ' open'); add('when will ' + s + ' open');
+    add('when are ' + s + ' open'); add('when is ' + s + ' open'); add('when ' + s + ' open'); add('when ' + s + ' up');
+    add('servers status'); add('server status');
+  });
+  add('open yet'); add('up yet'); add('is it open yet'); add('are we live'); add('is it live'); add('are servers up');
+  add('is server up'); add('servers online'); add('server online'); add('game online'); add('game live');
+
+  // play / can we play / when can we
+  ['play', 'play yet', 'play now', 'can we play', 'can we play?', 'can we play yet', 'can i play', 'can i play?', 'can i play yet',
+   'when can we play', 'when can we play?', 'when can i play', 'when can i play?', 'can we play now', 'can i play now',
+   'ready to play', 'when can we play the game', 'when can i play the game', 'able to play', 'when can we get in',
+   'can we get in', 'can i get in', 'when can we get in the game', 'get in the game', 'join the game', 'when can we join'].forEach(add);
+
+  // ETA / when / release / launch
+  ['eta', 'eta?', 'any eta', 'what\'s the eta', 'whats the eta', 'any eta?', 'got an eta', 'got a eta', 'have an eta',
+   'when\'s it out', 'when is it out', 'when out', 'when\'s the release', 'when is the release', 'release when',
+   'release date', 'when release', 'when\'s release', 'launch when', 'when launch', 'when\'s launch', 'when is launch',
+   'when does it open', 'when will it open', 'when does the game open', 'when will the game open', 'when is the game open',
+   'game release', 'game release?', 'when game release', 'release the game', 'when\'s the game coming', 'when is the game coming',
+   'game coming out', 'when coming out', 'when\'s it coming', 'when is it coming', 'any news on', 'any news on the game',
+   'any word on', 'any word on the game', 'heard anything about', 'heard anything about the game', 'any update on',
+   'any update on the game', 'when\'s the update', 'when is the update', 'update when', 'patch when', 'when patch',
+   'maintenance over', 'maintenance done', 'servers back', 'server back', 'back up yet', 'is it back up'].forEach(add);
+
+  // "game when" style
+  ['game when', 'game when?', 'game out when', 'game out?', 'game ready', 'game ready?', 'game available', 'game available?',
+   'game drop', 'game drop?', 'when drop', 'when\'s the drop', 'game live yet', 'live yet', 'playable yet', 'is it playable',
+   'can we play yet', 'we can play yet', 'can we get on', 'when can we get on', 'get on the game', 'when get on',
+   'log in yet', 'can we log in', 'when can we log in', 'login yet', 'servers back up', 'server back up',
+   'anyone know when', 'anyone know when the game', 'anyone know when servers', 'know when the game', 'know when servers',
+   'when we getting', 'when we getting the game', 'when are we getting', 'when we get to play', 'time to play',
+   'is it time to play', 'can we start playing', 'when can we start playing', 'start playing', 'playing yet',
+   'are we playing', 'we playing yet', 'game time', 'game time?', 'when game time', 'game out yet', 'out yet',
+   'game up yet', 'up yet', 'still down', 'game still down', 'servers still down', 'server still down',
+   'when\'s it live', 'when is it live', 'when\'s the game live', 'when is the game live', 'going live', 'when going live',
+   'going up', 'when going up', 'coming up', 'when coming up', 'opening when', 'when opening', 'opens when',
+   'when does it go live', 'when will it go live', 'when do servers go live', 'when will servers go live',
+   'gæm?', 'gaem?', 'game?', 'wen game', 'wen gaem', 'when gaem', 'when gæm', 'whn game', 'whens game',
+   'game wen', 'gaem when', 'servers wen', 'wen servers', 'when servrs', 'play wen', 'wen play',
+   'can we play rn', 'can i play rn', 'play rn', 'game rn', 'servers rn', 'up rn', 'open rn',
+   'any chance we can play', 'any chance to play', 'any chance the game', 'any chance servers',
+   'is the game out', 'game out', 'game out?', 'when\'s the game out', 'when is the game out',
+   'game available yet', 'available yet', 'ready yet', 'is it ready', 'is the game ready',
+   'when will we be able to play', 'when can we start', 'when can i start', 'able to play yet',
+   'can we access', 'when can we access', 'when can i access', 'access the game', 'game access',
+   'servers working', 'server working', 'is server working', 'are servers working', 'game working',
+   'when\'s the beta', 'when is the beta', 'beta when', 'beta out', 'beta open', 'when beta',
+   'early access when', 'when early access', 'early access yet', 'open beta', 'open beta?',
+   'closed beta when', 'when closed beta', 'alpha when', 'when alpha', 'test when', 'when test',
+   'stress test', 'when stress test', 'beta test when', 'when beta test', 'playtest when',
+   'downtime over', 'downtime done', 'when\'s downtime over', 'maintenance when', 'when maintenance',
+   'patch out', 'patch out?', 'when patch out', 'update out', 'update out?', 'when update',
+   'hotfix when', 'when hotfix', 'fix when', 'when fix', 'back online', 'online yet',
+   'game back', 'servers back yet', 'back yet', 'is it back', 'are we back', 'we back',
+   'can we hop on', 'when can we hop on', 'hop on', 'hop on the game', 'get on yet',
+   'when\'s it dropping', 'when is it dropping', 'when dropping', 'drop when', 'game drop when',
+   'launch when', 'when\'s launch', 'when is launch', 'launch date', 'launch date?', 'when\'s launch date',
+   'release date?', 'when release date', 'release when', 'when\'s the release date', 'release the game when',
+   'any info on', 'any info on the game', 'any info on servers', 'got info', 'any news', 'any news?',
+   'when we playing', 'we playing', 'playing today', 'play today', 'can we play today',
+   'tomorrow', 'game tomorrow', 'servers tomorrow', 'open tomorrow', 'when tomorrow',
+   'this week', 'game this week', 'servers this week', 'release this week', 'this weekend',
+   'game this weekend', 'play this weekend', 'next week', 'game next week', 'servers next week',
+   'still waiting', 'waiting for game', 'waiting for servers', 'waiting to play', 'when can we stop waiting',
+   'im waiting', 'i\'m waiting', 'we waiting', 'still no game', 'still no servers', 'no game yet',
+   'no servers yet', 'game not out', 'servers not up', 'not open yet', 'not up yet', 'not live yet',
+   'delayed', 'game delayed', 'release delayed', 'when\'s the delay', 'delay when', 'delayed when',
+   'postponed', 'game postponed', 'release postponed', 'pushed back', 'game pushed back',
+   'wen', 'wen game', 'wen servers', 'wen play', 'wen open', 'wen up', 'wen release', 'wen launch',
+   'whn', 'whens', 'when\'s', 'when is', 'when are', 'when will', 'when do', 'when can',
+   'game when', 'gaem when', 'gæm when', 'servers when', 'server when', 'play when', 'open when',
+   'when game', 'when gaem', 'when gæm', 'when servers', 'when server', 'when play', 'when open',
+   'game?', 'gaem?', 'gæm?', 'servers?', 'server?', 'play?', 'open?', 'up?', 'eta?',
+   'soon?', 'when soon', 'how soon', 'how soon until', 'how long until', 'how long until we can play',
+   'how long until servers', 'how long until game', 'how much longer', 'how much longer until',
+   'any minute now', 'any time now', 'should be soon', 'supposed to be soon', 'was supposed to open',
+   'was supposed to be up', 'should be up', 'should be open', 'should be live', 'must be soon',
+  ].forEach(add);
+
+  return [...phrases];
+}
+const SOON_TRIGGER_PHRASES = buildSoonTriggerPhrases();
+console.log(`Soon trigger phrases: ${SOON_TRIGGER_PHRASES.length}`);
 
 // Multiple GIFs – one is picked at random when replying
 const TENOR_GIFS = [
@@ -86,6 +181,11 @@ const SPAM_SLUR_TERMS = [
   'niqqa', 'niqqer', 'n1qqa', 'n1qqer', 'n!qqa', 'n!qqer',
   'mein fuhrer', 'mein fuher', 'mein furer', 'fuhrer', 'fuher', 'furer', 'master race', 'masterrace',
   'kike', 'kikes', 'k1ke', 'k!ke', 'kyke', 'kik3', 'k1k3',
+].map(w => w.toLowerCase());
+
+// Religion-related "goy" terms – same as religion/politics: redirect to #off-topic with random GIF (no safe-context bypass)
+const GOY_TERMS = [
+  'goy', 'goyim', 'goyish', 'goys', 'goyische', 'goyishe', 'goyisher', 'goyem', 'goi', 'goim', 'g0y', 'g0yim',
 ].map(w => w.toLowerCase());
 
 // Off-topic phrases – vulgar/objectifying by body, gender, race, nationality. Bot replies with GIF + redirect (no safe-context bypass)
@@ -243,6 +343,13 @@ function hasOffTopicPhrase(text) {
   return OFF_TOPIC_PHRASES.some(phrase => lower.includes(phrase));
 }
 
+// Check if message contains any goy-related term (religion filter)
+function hasGoyTerm(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  return GOY_TERMS.some(term => lower.includes(term));
+}
+
 // Check if message is asking about game/servers/ETA (triggers "Soon" emoji reaction)
 function hasSoonTrigger(text) {
   if (!text || typeof text !== 'string') return false;
@@ -351,7 +458,7 @@ client.on('guildMemberRemove', (member) => {
   welcomedUserIds.delete(member.id);
 });
 
-// When a new user picks one of the nation roles for the first time: notify new-arrivals and welcome in gv-general
+// When a new user picks one of the nation roles for the first time: notify new-arrivals and welcome in gv-general (only if we didn't already welcome them on join)
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (newMember.roles.cache.size <= oldMember.roles.cache.size) return; // no role added
   const addedRoleIds = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
@@ -359,7 +466,8 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (!pickedNationRole) return;
 
   const userId = newMember.user.id;
-  if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role (e.g. switching)
+  if (welcomedUserIds.has(userId)) return; // already welcomed on guildMemberAdd – don't welcome again for role
+  if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role (e.g. switching to another)
 
   const joinedAt = newMember.joinedAt ? newMember.joinedAt.getTime() : 0;
   if (Date.now() - joinedAt > NEW_USER_JOIN_WINDOW_MS) return; // not a "new" user (joined too long ago)
@@ -425,6 +533,23 @@ client.on('messageCreate', async (message) => {
     if (DEBUG) console.log(`[skip] channel ${channelId} !== ${TRIGGER_CHANNEL_ID}`);
     return; // only gv-general
   }
+
+  // Specific user: move their media (GIF/image/video or tenor.com links) when the message text contains religion/politics to #off-topic
+  if (message.author.id === MEDIA_RELIGION_OFFTOPIC_USER_ID) {
+    const hasImageOrVideo = message.attachments?.some(
+      a => IMAGE_CONTENT_TYPES.test(a.contentType || '') || VIDEO_CONTENT_TYPES.test(a.contentType || '') || IMAGE_EXTENSIONS.test(a.name || '')
+    );
+    const hasTenorLink = message.content && message.content.includes('tenor.com');
+    const hasMedia = hasImageOrVideo || hasTenorLink;
+    const hasReligionPolitics = message.content && (hasTriggerWord(message.content) || hasGoyTerm(message.content));
+    if (hasMedia && hasReligionPolitics) {
+      const randomGifMedia = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+      await deleteInGeneralAndForwardToOffTopic(message, randomGifMedia);
+      if (DEBUG) console.log(`[media-religion] Moved ${message.author.tag} media+religion/politics to off-topic`);
+      return;
+    }
+  }
+
   if (!message.content) {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
     return;
@@ -454,6 +579,13 @@ client.on('messageCreate', async (message) => {
   // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, forward to #off-topic.
   if (hasOffTopicPhrase(message.content)) {
     await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
+    return;
+  }
+
+  // Goy / religion terms: same as religion/politics – random GIF, redirect to #off-topic
+  if (hasGoyTerm(message.content)) {
+    const randomGifGoy = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+    await deleteInGeneralAndForwardToOffTopic(message, randomGifGoy);
     return;
   }
 
