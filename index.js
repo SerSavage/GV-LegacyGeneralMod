@@ -473,13 +473,28 @@ client.on('messageCreate', async (message) => {
 
 // --- Health check server (for Render: readiness + keep-alive) ---
 // On Render free tier the service sleeps after ~15 min without incoming HTTP requests.
-// Use an external pinger (e.g. UptimeRobot) to hit https://your-service.onrender.com every 5–10 min so the bot stays online.
+// Use an external pinger (e.g. UptimeRobot) to hit your Render URL every 5 min so the service stays awake.
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('OK');
 });
-server.listen(PORT, () => {
-  console.log(`Health check server on port ${PORT}`);
+server.listen(Number(PORT), '0.0.0.0', () => {
+  console.log(`Health check server on 0.0.0.0:${PORT}`);
+});
+
+// Log and avoid silent exit on unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection at', promise, 'reason:', reason);
+});
+
+client.on('error', (err) => {
+  console.error('Discord client error:', err);
+});
+client.on('warn', (info) => {
+  console.warn('Discord client warn:', info);
 });
 
 // --- Start bot ---
@@ -487,4 +502,7 @@ if (!DISCORD_TOKEN) {
   console.error('Set DISCORD_TOKEN in environment (e.g. on Render: Environment tab).');
   process.exit(1);
 }
-client.login(DISCORD_TOKEN);
+client.login(DISCORD_TOKEN).catch((err) => {
+  console.error('Discord login failed:', err.message || err);
+  process.exit(1);
+});
