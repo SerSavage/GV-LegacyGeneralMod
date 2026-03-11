@@ -392,6 +392,10 @@ const POLITICAL_LEADERS = new Set([
   'rishi', 'boris', 'merkel', 'trudeau', 'erdogan', 'mbs', 'bin salman', 'khamenei', 'rouhani',
 ].map(w => w.toLowerCase()));
 const POLITICAL_EXTRA_WORDS = new Set(['states', 'nato', 'un', 'eu', 'sanctions', 'invasion', 'regime']);
+// Single-word religion terms so posting e.g. "church" or "christ" alone triggers (even if not in words.txt)
+const RELIGION_SINGLE_WORDS = new Set([
+  'church', 'christ', 'jesus', 'god', 'allah', 'prayer', 'pray', 'mosque', 'bible', 'quran', 'holy', 'religious', 'religion',
+].map(w => w.toLowerCase()));
 
 // Far-left / far-right and polarized ideological terms – views not generally discussed in gv-general (forward to off-topic)
 // Ref: far-left (communism, Marxism, anarchism, revolutionary socialism, anti-capitalism); far-right (fascism, Nazism, supremacism, ethnonationalism, nativism)
@@ -414,12 +418,13 @@ const IDEOLOGICAL_PHRASES = [
   'red pill', 'blue pill', 'black pill',
 ].map(p => p.toLowerCase());
 
-function isPoliticalTerm(word) {
+function isPoliticalOrReligionTerm(word) {
   if (!word) return false;
   const w = word.toLowerCase();
   if (POLITICAL_EXTRA_WORDS.has(w)) return true;
   if (POLITICAL_COUNTRIES.has(w)) return true;
   if (IDEOLOGICAL_TERMS.has(w)) return true;
+  if (RELIGION_SINGLE_WORDS.has(w)) return true;
   for (const leader of POLITICAL_LEADERS) {
     if (w.includes(leader) || leader.includes(w)) return true;
   }
@@ -449,9 +454,9 @@ function shouldTriggerReligionPolitics(text) {
   return isMostlyReligionPolitics(text) || messageContainsIdeologicalPhrase(text) || messageContainsReligionPoliticsPhrase(text);
 }
 
-// Religion/politics: only trigger if ≥80% of words are filter words (so normal sentences with one trigger word don't get moved)
+// Religion/politics: trigger if ≥80% of words are filter words. Min 1 word so single-word posts (e.g. "Pakistan", "church") trigger
 const RELIGION_POLITICS_RATIO = Math.min(1, Math.max(0.5, parseFloat(process.env.RELIGION_POLITICS_RATIO) || 0.8));
-const RELIGION_POLITICS_MIN_WORDS = Math.max(2, parseInt(process.env.RELIGION_POLITICS_MIN_WORDS, 10) || 3);
+const RELIGION_POLITICS_MIN_WORDS = Math.max(1, parseInt(process.env.RELIGION_POLITICS_MIN_WORDS, 10) || 1);
 
 function tokenizeWords(text) {
   if (!text || typeof text !== 'string') return [];
@@ -463,7 +468,7 @@ function tokenizeWords(text) {
 
 function wordMatchesTriggerWord(word) {
   if (!word) return false;
-  if (isPoliticalTerm(word)) return true;
+  if (isPoliticalOrReligionTerm(word)) return true;
   const normalized = normalizeForMatch(word);
   for (const tw of triggerWords) {
     const re = new RegExp('^' + escapeRegex(tw) + '$', 'i');
