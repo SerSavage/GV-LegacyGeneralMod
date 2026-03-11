@@ -399,9 +399,10 @@ const POLITICAL_LEADERS = new Set([
   'rishi', 'boris', 'merkel', 'trudeau', 'erdogan', 'mbs', 'bin salman', 'khamenei', 'rouhani',
 ].map(w => w.toLowerCase()));
 const POLITICAL_EXTRA_WORDS = new Set(['states', 'nato', 'un', 'eu', 'sanctions', 'invasion', 'regime']);
-// Single-word religion terms so posting e.g. "church" or "christ" alone triggers (even if not in words.txt)
+// Single-word religion/identity terms so posting e.g. "church", "muslims", "jews" triggers (even if not in words.txt)
 const RELIGION_SINGLE_WORDS = new Set([
   'church', 'christ', 'jesus', 'god', 'allah', 'prayer', 'pray', 'mosque', 'bible', 'quran', 'holy', 'religious', 'religion',
+  'muslim', 'muslims', 'islam', 'islamic', 'jew', 'jews', 'jewish', 'judaism', 'christian', 'christians',
 ].map(w => w.toLowerCase()));
 
 // Far-left / far-right and polarized ideological terms – views not generally discussed in gv-general (forward to off-topic)
@@ -444,10 +445,11 @@ function messageContainsIdeologicalPhrase(text) {
   return IDEOLOGICAL_PHRASES.some(p => lower.includes(p));
 }
 
-// Obvious religion/politics phrases – trigger even if 80% word ratio isn't met (e.g. "go to church ... christ", "Pakistan Iran Israel are states")
+// Obvious religion/politics phrases – trigger even if 80% word ratio isn't met
 const RELIGION_POLITICS_PHRASES = [
   'go to church', 'go to the church', 'become a christ', 'motherfucking christ', 'holy motherfucking',
   'pakistan iran', 'iran israel', 'pakistan israel', 'are states', 'israel are', 'iran are', 'pakistan are',
+  'killing muslims', 'killing jews', 'kill muslims', 'kill jews', 'killing christians', 'muslims is based', 'jews is based',
 ].map(p => p.toLowerCase());
 function messageContainsReligionPoliticsPhrase(text) {
   if (!text || typeof text !== 'string') return false;
@@ -493,7 +495,7 @@ function wordContainsGoy(word) {
   return GOY_TERMS.some(term => lower.includes(term));
 }
 
-/** Returns true only if the message is mostly (≥80%) religion/politics/goy trigger words, so normal chat is not moved. */
+/** Returns true if message is mostly (≥80%) trigger words, or has ≥2 trigger words (catches e.g. "killing Muslims is based"). */
 function isMostlyReligionPolitics(text) {
   const words = tokenizeWords(text);
   if (words.length < RELIGION_POLITICS_MIN_WORDS) return false;
@@ -501,7 +503,9 @@ function isMostlyReligionPolitics(text) {
   for (const w of words) {
     if (wordMatchesTriggerWord(w) || wordContainsGoy(w)) triggerCount++;
   }
-  return triggerCount / words.length >= RELIGION_POLITICS_RATIO;
+  const ratio = triggerCount / words.length;
+  const minTriggerWords = Math.max(2, parseInt(process.env.RELIGION_POLITICS_MIN_TRIGGER_WORDS, 10) || 2);
+  return ratio >= RELIGION_POLITICS_RATIO || (triggerCount >= minTriggerWords && words.length >= 2);
 }
 
 // Check if message is asking about game/servers/ETA (triggers "Soon" emoji reaction)
