@@ -290,14 +290,37 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
 const welcomedForNationRoleByUser = new Set();
 // Admin join: userId -> last welcome timestamp (so we don't double-welcome from messageCreate + periodic scan)
 const adminJoinWelcomedAt = new Map();
+
+// Get all text from a message (content + embed title/description/fields) so we detect join notifications in embeds too
+function getMessageTextForJoinCheck(msg) {
+  const parts = [msg.content || ''];
+  if (msg.embeds?.length) {
+    for (const emb of msg.embeds) {
+      if (emb.title) parts.push(emb.title);
+      if (emb.description) parts.push(emb.description);
+      if (emb.fields?.length) {
+        for (const f of emb.fields) {
+          if (f.name) parts.push(f.name);
+          if (f.value) parts.push(f.value);
+        }
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
 function isJoinNotification(text) {
   if (!text || typeof text !== 'string') return false;
   const c = text.toLowerCase();
-  return /\b(member\s+joined|joined|welcome|just\s+joined)\b/i.test(c) || c.includes('joined the server') || c.includes('user joined');
+  return /\b(member\s+joined|joined|welcome|just\s+joined)\b/i.test(c) || c.includes('joined the server') || c.includes('user joined') || c.includes('to join');
 }
 function extractUserIdFromJoinMessage(text) {
   if (!text || typeof text !== 'string') return null;
-  let m = text.match(/ID\s*:\s*(\d{17,19})/i);
+  // Mention syntax in message/embed text: <@367144932424679427>
+  let m = text.match(/<@(\d{17,19})>/);
+  if (m) return m[1];
+  // "ID: 367144932424679427" or "ID : 367144932424679427"
+  m = text.match(/ID\s*:\s*(\d{17,19})/i);
   if (m) return m[1];
   if (isJoinNotification(text)) {
     m = text.match(/\b(\d{17,19})\b/);
@@ -355,10 +378,10 @@ client.once('clientReady', () => {
     try {
       const channel = await client.channels.fetch(ADMIN_JOIN_CHANNEL_ID);
       if (!channel?.isTextBased() || !('messages' in channel)) return;
-      const messages = await channel.messages.fetch({ limit: 25 });
+      const messages = await channel.messages.fetch({ limit: 50 });
       for (const msg of messages.values()) {
         if (msg.author?.id === client.user?.id) continue;
-        const raw = msg.content || '';
+        const raw = getMessageTextForJoinCheck(msg);
         const userId = msg.mentions?.users?.first()?.id || extractUserIdFromJoinMessage(raw);
         if (!userId || !shouldWelcomeFromAdmin(userId)) continue;
         const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
@@ -370,7 +393,7 @@ client.once('clientReady', () => {
         if (DEBUG) console.log(`[admin-join-scan] Welcomed ${userId} in gv-general (missed earlier)`);
       }
     } catch (err) {
-      if (DEBUG) console.error('Admin join scan failed:', err.message);
+      console.error('Admin join scan failed:', err.message || err);
     }
   };
   setTimeout(runAdminJoinScan, 10000);
@@ -430,9 +453,9 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async (message) => {
   const channelId = String(message.channelId);
 
-  // Admin channel: "Member joined" / "User joined ID: 440675174245990400" — welcome that user in gv-general (we do this even for bot messages)
+  // Admin channel: "Member joined" / "User joined ID: ..." / embeds — welcome that user in gv-general (we do this even for bot messages)
   if (channelId === ADMIN_JOIN_CHANNEL_ID) {
-    const rawContent = message.content || '';
+    const rawContent = getMessageTextForJoinCheck(message);
     let userId = message.mentions?.users?.first()?.id || extractUserIdFromJoinMessage(rawContent);
     if (userId && shouldWelcomeFromAdmin(userId)) {
       try {
