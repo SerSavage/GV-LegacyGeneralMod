@@ -1,6 +1,8 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const fs = require('fs');
+const path = require('path');
 const http = require('http');
+const Parser = require('rss-parser');
 
 // --- Config (env or defaults for local) ---
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -22,6 +24,14 @@ const MEDIA_RELIGION_OFFTOPIC_USER_ID = process.env.MEDIA_RELIGION_OFFTOPIC_USER
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
 const IMAGE_CONTENT_TYPES = /^image\//;
 const VIDEO_CONTENT_TYPES = /^video\//;
+// Folder for downloading off-topic attachments before forwarding to gv-general (Discord URLs break after original message is deleted)
+const FORWARDED_MEDIA_DIR = process.env.FORWARDED_MEDIA_DIR || path.join(process.cwd(), 'forwarded-media');
+const FORWARDED_MEDIA_EXTENSIONS = /\.(jpe?g|png|gif|webp|mp4|webm|mov|mp3|wav|m4a|ogg)$/i;
+// RSS feed → Discord announcement channel (e.g. Gloria Victis news). If the site has no RSS, use a converter like https://rss.app/ with the news page URL.
+const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1166742322738905178';
+const RSS_FEED_URL = process.env.RSS_FEED_URL || ''; // e.g. from rss.app for https://en.gamigo.com/game/gloria-victis
+const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
+const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
@@ -368,6 +378,16 @@ function getSpamVideoPayload() {
   return { content: '(Video not configured: set VIDEO_PATH or VIDEO_URL, or add assets/TMFIAR.mp4)' };
 }
 
+// Download a URL to a local file (for off-topic → gv-general so we upload fresh files instead of reusing Discord URLs that break after delete)
+async function downloadUrlToFile(url, filePath) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'DiscordBot (GV-LegacyGeneralMod)' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (!fs.existsSync(path.dirname(filePath))) fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, buf);
+  return filePath;
+}
+
 // Delete message in gv-general and forward it to #off-topic with user tag and same GIF/video response
 async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
   try {
@@ -421,6 +441,28 @@ function recordSlurReply(userId) {
   slurReplyByUser.set(userId, entry);
 }
 
+// --- RSS feed: seen item IDs (persisted so we don't repost after restart) ---
+function loadRssSeen() {
+  try {
+    if (fs.existsSync(RSS_SEEN_FILE)) {
+      const data = JSON.parse(fs.readFileSync(RSS_SEEN_FILE, 'utf8'));
+      return new Set(Array.isArray(data) ? data : []);
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('RSS seen file load failed:', e.message);
+  }
+  return new Set();
+}
+function saveRssSeen(seen) {
+  try {
+    fs.writeFileSync(RSS_SEEN_FILE, JSON.stringify([...seen].slice(-500)), 'utf8'); // keep last 500
+  } catch (e) {
+    if (DEBUG) console.warn('RSS seen file save failed:', e.message);
+  }
+}
+const rssSeen = loadRssSeen();
+const rssParser = new Parser({ timeout: 10000 });
+
 // --- Discord bot ---
 const client = new Client({
   intents: [
@@ -435,6 +477,35 @@ client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Welcomes only from guildMemberAdd (+ first role); admin channel ignored for welcome`);
+
+  // RSS feed → announcement channel (only if RSS_FEED_URL is set)
+  if (RSS_FEED_URL && ANNOUNCEMENT_CHANNEL_ID) {
+    const runRssPoll = async () => {
+      try {
+        const feed = await rssParser.parseURL(RSS_FEED_URL);
+        const channel = await client.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
+        if (!channel?.isTextBased()) return;
+        let posted = 0;
+        for (const item of feed.items || []) {
+          const id = item.guid || item.link || item.title;
+          if (!id || rssSeen.has(id)) continue;
+          rssSeen.add(id);
+          const title = item.title || 'News';
+          const link = item.link || '';
+          const snippet = (item.contentSnippet || item.content || '').slice(0, 300);
+          const content = link ? `${title}\n${link}${snippet ? `\n${snippet}` : ''}` : title;
+          await channel.send({ content: content.slice(0, 2000) });
+          posted++;
+          saveRssSeen(rssSeen);
+        }
+        if (DEBUG && posted > 0) console.log(`[rss] Posted ${posted} item(s) to announcement channel`);
+      } catch (err) {
+        console.error('RSS poll failed:', err.message || err);
+      }
+    };
+    runRssPoll();
+    setInterval(runRssPoll, RSS_POLL_INTERVAL_MS);
+  }
 });
 
 // When a user joins the server, post the welcome video in gv-general (record so scan/messageCreate won't welcome again)
@@ -507,21 +578,31 @@ client.on('messageCreate', async (message) => {
 
   if (message.author.bot) return; // from here on we only react to user messages in gv-general
 
-  // Off-topic → gv-general: move this user's image/GIF posts only (delete in off-topic, re-post in gv-general with no message)
+  // Off-topic → gv-general: move this user's image/GIF/video/audio posts. Download to local folder first so we upload fresh files (Discord attachment URLs break after original message is deleted).
   if (OFFTOPIC_TO_GENERAL_USER_ID && channelId === REDIRECT_CHANNEL_ID && message.author.id === OFFTOPIC_TO_GENERAL_USER_ID && message.attachments?.size > 0) {
-    const imageAttachments = message.attachments.filter(
-      a => IMAGE_CONTENT_TYPES.test(a.contentType || '') || IMAGE_EXTENSIONS.test(a.name || '')
+    const mediaAttachments = message.attachments.filter(
+      a => IMAGE_CONTENT_TYPES.test(a.contentType || '') || VIDEO_CONTENT_TYPES.test(a.contentType || '') || /^audio\//.test(a.contentType || '') || IMAGE_EXTENSIONS.test(a.name || '') || FORWARDED_MEDIA_EXTENSIONS.test(a.name || '')
     );
-    if (imageAttachments.size > 0) {
+    if (mediaAttachments.size > 0) {
       try {
-        await message.delete();
+        const dir = FORWARDED_MEDIA_DIR;
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const localPaths = [];
+        let idx = 0;
+        for (const att of mediaAttachments.values()) {
+          const ext = path.extname(att.name || '') || '.jpg';
+          const safeName = (att.name || `file${ext}`).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+          const localPath = path.join(dir, `${message.id}_${idx}_${safeName}`);
+          await downloadUrlToFile(att.url, localPath);
+          localPaths.push({ attachment: localPath, name: safeName });
+          idx++;
+        }
         const generalChannel = await message.client.channels.fetch(GV_GENERAL_CHANNEL_ID);
         if (generalChannel?.isTextBased()) {
-          await generalChannel.send({
-            files: imageAttachments.map(a => a.url),
-          });
-          if (DEBUG) console.log(`[offtopic→general] Moved ${imageAttachments.size} image(s) from ${message.author.tag}`);
+          await generalChannel.send({ files: localPaths });
+          if (DEBUG) console.log(`[offtopic→general] Moved ${localPaths.length} file(s) from ${message.author.tag} (saved to ${dir})`);
         }
+        await message.delete();
       } catch (err) {
         console.error('Off-topic → gv-general move failed:', err);
       }
