@@ -12,8 +12,6 @@ const TRIGGER_CHANNEL_ID = String(process.env.TRIGGER_CHANNEL_ID || '11667384175
 const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // channel to post new-arrival video
 // Admin channel that gets join notifications — when we see a join message here, we welcome that user in gv-general (fallback if guildMemberAdd doesn't fire)
 const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
-const ADMIN_JOIN_SCAN_INTERVAL_MS = Math.max(30000, parseInt(process.env.ADMIN_JOIN_SCAN_INTERVAL_MS, 10) || 60000); // scan admin channel every 1 min for missed joins
-const ADMIN_JOIN_WELCOMED_TTL_MS = 2 * 60 * 1000; // don't welcome same user again within 2 min (avoids duplicate from messageCreate + scan)
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
@@ -288,8 +286,8 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
 
 // Track users we've already welcomed for picking a nation role (first-time only)
 const welcomedForNationRoleByUser = new Set();
-// Admin join: userId -> last welcome timestamp (so we don't double-welcome from messageCreate + periodic scan)
-const adminJoinWelcomedAt = new Map();
+// Admin join: user IDs we've already welcomed (welcome once; clear on leave so we re-welcome if they rejoin)
+const adminJoinWelcomed = new Set();
 
 // Get all text from a message (content + embed title/description/fields) so we detect join notifications in embeds too
 function getMessageTextForJoinCheck(msg) {
@@ -329,11 +327,10 @@ function extractUserIdFromJoinMessage(text) {
   return null;
 }
 function shouldWelcomeFromAdmin(userId) {
-  const at = adminJoinWelcomedAt.get(userId);
-  return !at || (Date.now() - at > ADMIN_JOIN_WELCOMED_TTL_MS);
+  return !adminJoinWelcomed.has(userId);
 }
 function recordAdminWelcome(userId) {
-  adminJoinWelcomedAt.set(userId, Date.now());
+  adminJoinWelcomed.add(userId);
 }
 
 // Slur reply tracking: first offense = GIF, repeated/spam = video. Entries reset after SLUR_TRACK_TTL_MS.
@@ -371,36 +368,10 @@ const client = new Client({
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
-  console.log(`Admin join fallback channel: ${ADMIN_JOIN_CHANNEL_ID}`);
-
-  // Scan admin channel for missed joins: once after 10s (catch joins while bot was down), then every 1 min
-  const runAdminJoinScan = async () => {
-    try {
-      const channel = await client.channels.fetch(ADMIN_JOIN_CHANNEL_ID);
-      if (!channel?.isTextBased() || !('messages' in channel)) return;
-      const messages = await channel.messages.fetch({ limit: 50 });
-      for (const msg of messages.values()) {
-        if (msg.author?.id === client.user?.id) continue;
-        const raw = getMessageTextForJoinCheck(msg);
-        const userId = msg.mentions?.users?.first()?.id || extractUserIdFromJoinMessage(raw);
-        if (!userId || !shouldWelcomeFromAdmin(userId)) continue;
-        const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
-        if (!generalChannel?.isTextBased()) continue;
-        await generalChannel.send({
-          content: `Welcome, <@${userId}>!\n${getRandomWelcomeVideoUrl()}`,
-        });
-        recordAdminWelcome(userId);
-        if (DEBUG) console.log(`[admin-join-scan] Welcomed ${userId} in gv-general (missed earlier)`);
-      }
-    } catch (err) {
-      console.error('Admin join scan failed:', err.message || err);
-    }
-  };
-  setTimeout(runAdminJoinScan, 10000);
-  setInterval(runAdminJoinScan, ADMIN_JOIN_SCAN_INTERVAL_MS);
+  console.log(`Admin join channel (live messages only): ${ADMIN_JOIN_CHANNEL_ID}`);
 });
 
-// When a user joins the server, post the welcome video in gv-general
+// When a user joins the server, post the welcome video in gv-general (record so scan/messageCreate won't welcome again)
 client.on('guildMemberAdd', async (member) => {
   try {
     const channel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
@@ -408,11 +379,17 @@ client.on('guildMemberAdd', async (member) => {
       await channel.send({
         content: `Welcome, ${member.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
       });
+      recordAdminWelcome(member.user.id);
       if (DEBUG) console.log(`[new-arrival] Posted welcome video for ${member.user.tag} in gv-general`);
     }
   } catch (err) {
     console.error('New-arrival video post failed:', err);
   }
+});
+
+// When a user leaves, allow re-welcome if they rejoin
+client.on('guildMemberRemove', (member) => {
+  adminJoinWelcomed.delete(member.id);
 });
 
 // When a new user picks one of the nation roles for the first time: notify new-arrivals and welcome in gv-general
