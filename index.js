@@ -46,8 +46,15 @@ function getRandomWelcomeVideoUrl() {
   return NEW_ARRIVAL_VIDEO_URLS[Math.floor(Math.random() * NEW_ARRIVAL_VIDEO_URLS.length)] || 'https://streamable.com/vxi8bu';
 }
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
-// Image + text for "Chronicus Generalium" reply in gv-general when user is moved to off-topic
-const CHRONICUS_IMAGE_PATH = path.join(process.cwd(), 'assets', 'memes', 'v11.png');
+// Images for "Chronicus Generalium" reply in gv-general when user is moved to off-topic — one picked at random
+const CHRONICUS_MEME_PATHS = [
+  path.join(process.cwd(), 'assets', 'memes', 'v11.png'),
+  path.join(process.cwd(), 'assets', 'memes', 'file_00000000fb88720a807a57aff20e418a.png'),
+];
+function getRandomChronicusMeme() {
+  const existing = CHRONICUS_MEME_PATHS.filter(p => fs.existsSync(p));
+  return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
+}
 const CHRONICUS_TEXT = '**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***';
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
@@ -550,8 +557,9 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
     const generalChannel = await message.client.channels.fetch(GV_GENERAL_CHANNEL_ID);
     if (generalChannel?.isTextBased()) {
       const chronicusContent = `${message.author.toString()}\n\n${CHRONICUS_TEXT}`;
-      const payload = fs.existsSync(CHRONICUS_IMAGE_PATH)
-        ? { content: chronicusContent, files: [{ attachment: CHRONICUS_IMAGE_PATH, name: 'v11.png' }] }
+      const memePath = getRandomChronicusMeme();
+      const payload = memePath
+        ? { content: chronicusContent, files: [{ attachment: memePath, name: path.basename(memePath) }] }
         : { content: chronicusContent };
       await generalChannel.send(payload);
     }
