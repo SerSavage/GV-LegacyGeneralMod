@@ -46,6 +46,9 @@ function getRandomWelcomeVideoUrl() {
   return NEW_ARRIVAL_VIDEO_URLS[Math.floor(Math.random() * NEW_ARRIVAL_VIDEO_URLS.length)] || 'https://streamable.com/vxi8bu';
 }
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
+// Image + text for "Chronicus Generalium" reply in gv-general when user is moved to off-topic
+const CHRONICUS_IMAGE_PATH = path.join(process.cwd(), 'assets', 'memes', 'v11.png');
+const CHRONICUS_TEXT = '**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***';
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
 const SOON_EMOJI = '<:Soon:1480665289715617842>';
@@ -430,7 +433,7 @@ async function downloadUrlToFile(url, filePath) {
   return filePath;
 }
 
-// Delete message in gv-general and forward it to #off-topic with user tag and same GIF/video response
+// Delete message in gv-general and forward it to #off-topic with user tag and same GIF/video response; then post Chronicus Generalium in gv-general
 async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
   try {
     await message.delete();
@@ -450,6 +453,18 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
     await channel.send({ content });
   } catch (err) {
     console.error('Forward to off-topic failed:', err);
+  }
+  try {
+    const generalChannel = await message.client.channels.fetch(GV_GENERAL_CHANNEL_ID);
+    if (generalChannel?.isTextBased()) {
+      const chronicusContent = `${message.author.toString()}\n\n${CHRONICUS_TEXT}`;
+      const payload = fs.existsSync(CHRONICUS_IMAGE_PATH)
+        ? { content: chronicusContent, files: [{ attachment: CHRONICUS_IMAGE_PATH, name: 'v11.png' }] }
+        : { content: chronicusContent };
+      await generalChannel.send(payload);
+    }
+  } catch (err) {
+    console.error('Chronicus Generalium post failed:', err.message);
   }
 }
 
