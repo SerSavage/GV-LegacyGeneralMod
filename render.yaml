@@ -1,5 +1,7 @@
+# Use a Background Worker so the Discord bot stays running 24/7 without spin-down.
+# (Web Service on free tier sleeps after ~15 min without HTTP traffic; Background Worker does not.)
 services:
-  - type: web
+  - type: worker
     name: gv-legacy-general-mod
     runtime: node
     buildCommand: yarn
@@ -7,4 +9,3 @@ services:
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-    healthCheckPath: /
