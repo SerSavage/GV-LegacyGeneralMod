@@ -380,6 +380,75 @@ function hasGoyTerm(text) {
   return GOY_TERMS.some(term => lower.includes(term));
 }
 
+// Political countries and leaders – count as trigger words for religion/politics filter (e.g. "Pakistan Iran Israel are states")
+const POLITICAL_COUNTRIES = new Set([
+  'pakistan', 'iran', 'israel', 'india', 'china', 'russia', 'usa', 'ukraine', 'taiwan', 'gaza', 'palestine',
+  'afghanistan', 'syria', 'iraq', 'north korea', 'south korea', 'saudi', 'yemen', 'lebanon', 'jordan', 'egypt',
+  'turkey', 'israeli', 'iranian', 'pakistani', 'russian', 'chinese', 'american', 'british', 'french', 'german',
+].map(w => w.toLowerCase()));
+const POLITICAL_LEADERS = new Set([
+  'netanyahu', 'modi', 'xi', 'jinping', 'putin', 'zelensky', 'zelenskyy', 'trump', 'biden', 'obama',
+  'musk', 'kim jong', 'mcconnell', 'pelosi', 'schumer', 'johnson', 'sunak', 'macron', 'scholz',
+  'rishi', 'boris', 'merkel', 'trudeau', 'erdogan', 'mbs', 'bin salman', 'khamenei', 'rouhani',
+].map(w => w.toLowerCase()));
+const POLITICAL_EXTRA_WORDS = new Set(['states', 'nato', 'un', 'eu', 'sanctions', 'invasion', 'regime']);
+
+// Far-left / far-right and polarized ideological terms – views not generally discussed in gv-general (forward to off-topic)
+// Ref: far-left (communism, Marxism, anarchism, revolutionary socialism, anti-capitalism); far-right (fascism, Nazism, supremacism, ethnonationalism, nativism)
+const IDEOLOGICAL_TERMS = new Set([
+  'communism', 'communist', 'marxism', 'marxist', 'marx', 'anarchism', 'anarchist', 'socialism', 'socialist',
+  'anti-capitalism', 'anticapitalism', 'anti-capitalist', 'neoliberalism', 'neoliberal', 'revolution', 'revolutionary',
+  'proletariat', 'bourgeoisie', 'capitalism', 'capitalist', 'leftist', 'leftism', 'tankie', 'tankies',
+  'fascism', 'fascist', 'fascists', 'nazism', 'nazi', 'nazis', 'neo-nazi', 'neo-nazis', 'neonazi', 'neonazis',
+  'supremacist', 'supremacism', 'white supremacy', 'white supremacist', 'ethnonationalism', 'nativism', 'nativist',
+  'xenophobia', 'xenophobic', 'authoritarianism', 'authoritarian', 'ultranationalism', 'reactionary',
+  'redpilled', 'redpill', 'bluepilled', 'bluepill', 'blackpilled', 'blackpill', 'based', 'woke', 'libtard',
+  'antifa', 'boogaloo', 'white privilege', 'race-baiting', 'big lie', 'conspiracy theorist', 'freethinker',
+  'gerrymandering', 'globalist', 'globalism', 'illiberal', 'illiberalism', 'identity politics',
+  'cultural marxism', 'cultural marxist', 'critical theory', 'postmodern', 'postmodernism',
+].map(w => w.toLowerCase()));
+// Multi-word ideological phrases (message contains these → count as trigger context)
+const IDEOLOGICAL_PHRASES = [
+  'far left', 'far right', 'far-left', 'far-right', 'extreme left', 'extreme right', 'alt right', 'alt-left',
+  'white privilege', 'cultural marxism', 'identity politics', 'critical race', 'great replacement',
+  'red pill', 'blue pill', 'black pill',
+].map(p => p.toLowerCase());
+
+function isPoliticalTerm(word) {
+  if (!word) return false;
+  const w = word.toLowerCase();
+  if (POLITICAL_EXTRA_WORDS.has(w)) return true;
+  if (POLITICAL_COUNTRIES.has(w)) return true;
+  if (IDEOLOGICAL_TERMS.has(w)) return true;
+  for (const leader of POLITICAL_LEADERS) {
+    if (w.includes(leader) || leader.includes(w)) return true;
+  }
+  return false;
+}
+
+function messageContainsIdeologicalPhrase(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  return IDEOLOGICAL_PHRASES.some(p => lower.includes(p));
+}
+
+// Obvious religion/politics phrases – trigger even if 80% word ratio isn't met (e.g. "go to church ... christ", "Pakistan Iran Israel are states")
+const RELIGION_POLITICS_PHRASES = [
+  'go to church', 'go to the church', 'become a christ', 'motherfucking christ', 'holy motherfucking',
+  'pakistan iran', 'iran israel', 'pakistan israel', 'are states', 'israel are', 'iran are', 'pakistan are',
+].map(p => p.toLowerCase());
+function messageContainsReligionPoliticsPhrase(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  return RELIGION_POLITICS_PHRASES.some(p => lower.includes(p));
+}
+
+// Combined: should we treat message as religion/politics (ratio, ideological phrase, or obvious religion/politics phrase)
+function shouldTriggerReligionPolitics(text) {
+  if (!text || typeof text !== 'string') return false;
+  return isMostlyReligionPolitics(text) || messageContainsIdeologicalPhrase(text) || messageContainsReligionPoliticsPhrase(text);
+}
+
 // Religion/politics: only trigger if ≥80% of words are filter words (so normal sentences with one trigger word don't get moved)
 const RELIGION_POLITICS_RATIO = Math.min(1, Math.max(0.5, parseFloat(process.env.RELIGION_POLITICS_RATIO) || 0.8));
 const RELIGION_POLITICS_MIN_WORDS = Math.max(2, parseInt(process.env.RELIGION_POLITICS_MIN_WORDS, 10) || 3);
@@ -394,6 +463,7 @@ function tokenizeWords(text) {
 
 function wordMatchesTriggerWord(word) {
   if (!word) return false;
+  if (isPoliticalTerm(word)) return true;
   const normalized = normalizeForMatch(word);
   for (const tw of triggerWords) {
     const re = new RegExp('^' + escapeRegex(tw) + '$', 'i');
@@ -727,7 +797,7 @@ client.on('messageCreate', async (message) => {
     );
     const hasTenorLink = message.content && message.content.includes('tenor.com');
     const hasMedia = hasImageOrVideo || hasTenorLink;
-    const hasReligionPolitics = message.content && isMostlyReligionPolitics(message.content);
+    const hasReligionPolitics = message.content && shouldTriggerReligionPolitics(message.content);
     if (hasMedia && hasReligionPolitics) {
       const randomGifMedia = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
       await deleteInGeneralAndForwardToOffTopic(message, randomGifMedia);
@@ -773,13 +843,13 @@ client.on('messageCreate', async (message) => {
     return; // game/community context – don't trigger
   }
 
-  // Religion/politics/goy: only if ≥80% of words are filter words (normal sentences with one trigger word stay)
-  if (!isMostlyReligionPolitics(message.content)) {
-    if (DEBUG) console.log('[skip] not mostly religion/politics:', message.content.slice(0, 80));
+  // Religion/politics/goy: trigger if ≥80% filter words OR ideological phrases OR obvious religion/politics phrases
+  if (!shouldTriggerReligionPolitics(message.content)) {
+    if (DEBUG) console.log('[skip] not religion/politics:', message.content.slice(0, 80));
     return;
   }
 
-  // Religion/politics: random GIF. Delete in gv-general, forward to #off-topic.
+  // Religion/politics/ideological: random GIF. Delete in gv-general, forward to #off-topic.
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
   await deleteInGeneralAndForwardToOffTopic(message, randomGif);
 });
