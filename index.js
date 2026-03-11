@@ -345,7 +345,7 @@ const client = new Client({
   ],
 });
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Admin join fallback channel: ${ADMIN_JOIN_CHANNEL_ID}`);
@@ -525,7 +525,9 @@ client.on('messageCreate', async (message) => {
   await deleteInGeneralAndForwardToOffTopic(message, randomGif);
 });
 
-// --- Health check server (for Render: keep service alive / readiness) ---
+// --- Health check server (for Render: readiness + keep-alive) ---
+// On Render free tier the service sleeps after ~15 min without incoming HTTP requests.
+// Use an external pinger (e.g. UptimeRobot) to hit https://your-service.onrender.com every 5–10 min so the bot stays online.
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('OK');

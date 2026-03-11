@@ -1,6 +1,8 @@
 {
   "name": "gv-legacy-general-mod",
   "version": "1.0.0",
+  "private": true,
+  "license": "UNLICENSED",
   "description": "Discord bot: when a monitored word is posted, replies with GIF and redirect to channel",
   "main": "index.js",
   "engines": {
