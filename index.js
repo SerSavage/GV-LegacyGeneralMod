@@ -360,6 +360,48 @@ function hasGoyTerm(text) {
   return GOY_TERMS.some(term => lower.includes(term));
 }
 
+// Religion/politics: only trigger if ≥80% of words are filter words (so normal sentences with one trigger word don't get moved)
+const RELIGION_POLITICS_RATIO = Math.min(1, Math.max(0.5, parseFloat(process.env.RELIGION_POLITICS_RATIO) || 0.8));
+const RELIGION_POLITICS_MIN_WORDS = Math.max(2, parseInt(process.env.RELIGION_POLITICS_MIN_WORDS, 10) || 3);
+
+function tokenizeWords(text) {
+  if (!text || typeof text !== 'string') return [];
+  return stripEmojis(text)
+    .split(/\s+/)
+    .map(w => w.replace(/^[^\w\u00C0-\u024F]+|[^\w\u00C0-\u024F]+$/g, '').toLowerCase())
+    .filter(w => w.length > 0);
+}
+
+function wordMatchesTriggerWord(word) {
+  if (!word) return false;
+  const normalized = normalizeForMatch(word);
+  for (const tw of triggerWords) {
+    const re = new RegExp('^' + escapeRegex(tw) + '$', 'i');
+    if (re.test(word)) return true;
+    const wordNorm = normalizeForMatch(tw);
+    const reNorm = new RegExp('^' + escapeRegex(wordNorm) + '$', 'i');
+    if (reNorm.test(normalized)) return true;
+  }
+  return false;
+}
+
+function wordContainsGoy(word) {
+  if (!word) return false;
+  const lower = word.toLowerCase();
+  return GOY_TERMS.some(term => lower.includes(term));
+}
+
+/** Returns true only if the message is mostly (≥80%) religion/politics/goy trigger words, so normal chat is not moved. */
+function isMostlyReligionPolitics(text) {
+  const words = tokenizeWords(text);
+  if (words.length < RELIGION_POLITICS_MIN_WORDS) return false;
+  let triggerCount = 0;
+  for (const w of words) {
+    if (wordMatchesTriggerWord(w) || wordContainsGoy(w)) triggerCount++;
+  }
+  return triggerCount / words.length >= RELIGION_POLITICS_RATIO;
+}
+
 // Check if message is asking about game/servers/ETA (triggers "Soon" emoji reaction)
 function hasSoonTrigger(text) {
   if (!text || typeof text !== 'string') return false;
@@ -653,7 +695,7 @@ client.on('messageCreate', async (message) => {
     );
     const hasTenorLink = message.content && message.content.includes('tenor.com');
     const hasMedia = hasImageOrVideo || hasTenorLink;
-    const hasReligionPolitics = message.content && (hasTriggerWord(message.content) || hasGoyTerm(message.content));
+    const hasReligionPolitics = message.content && isMostlyReligionPolitics(message.content);
     if (hasMedia && hasReligionPolitics) {
       const randomGifMedia = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
       await deleteInGeneralAndForwardToOffTopic(message, randomGifMedia);
@@ -694,19 +736,14 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Goy / religion terms: same as religion/politics – random GIF, redirect to #off-topic
-  if (hasGoyTerm(message.content)) {
-    const randomGifGoy = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-    await deleteInGeneralAndForwardToOffTopic(message, randomGifGoy);
-    return;
-  }
-
   if (hasSafeContext(message.content)) {
     if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
     return; // game/community context – don't trigger
   }
-  if (!hasTriggerWord(message.content)) {
-    if (DEBUG) console.log('[skip] no trigger word in:', message.content.slice(0, 80));
+
+  // Religion/politics/goy: only if ≥80% of words are filter words (normal sentences with one trigger word stay)
+  if (!isMostlyReligionPolitics(message.content)) {
+    if (DEBUG) console.log('[skip] not mostly religion/politics:', message.content.slice(0, 80));
     return;
   }
 
