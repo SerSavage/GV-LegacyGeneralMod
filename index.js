@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 10000;
 // Trigger channel = gv-general (bot listens here for slurs, off-topic, religion/politics, Soon).
 const TRIGGER_CHANNEL_ID = String(process.env.TRIGGER_CHANNEL_ID || '1166738417539887218');
 const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // channel to post new-arrival video
-// Admin channel that gets join notifications — when we see a join message here, we welcome that user in gv-general (fallback if guildMemberAdd doesn't fire)
+// Admin-only channel: we skip gv-general triggers for messages here; welcomes are only from guildMemberAdd (not from Carl-bot log)
 const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
@@ -286,51 +286,10 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
 
 // Track users we've already welcomed for picking a nation role (first-time only)
 const welcomedForNationRoleByUser = new Set();
-// Admin join: user IDs we've already welcomed (welcome once; clear on leave so we re-welcome if they rejoin)
-const adminJoinWelcomed = new Set();
-
-// Get all text from a message (content + embed title/description/fields) so we detect join notifications in embeds too
-function getMessageTextForJoinCheck(msg) {
-  const parts = [msg.content || ''];
-  if (msg.embeds?.length) {
-    for (const emb of msg.embeds) {
-      if (emb.title) parts.push(emb.title);
-      if (emb.description) parts.push(emb.description);
-      if (emb.fields?.length) {
-        for (const f of emb.fields) {
-          if (f.name) parts.push(f.name);
-          if (f.value) parts.push(f.value);
-        }
-      }
-    }
-  }
-  return parts.join('\n');
-}
-
-function isJoinNotification(text) {
-  if (!text || typeof text !== 'string') return false;
-  const c = text.toLowerCase();
-  return /\b(member\s+joined|joined|welcome|just\s+joined)\b/i.test(c) || c.includes('joined the server') || c.includes('user joined') || c.includes('to join');
-}
-function extractUserIdFromJoinMessage(text) {
-  if (!text || typeof text !== 'string') return null;
-  // Mention syntax in message/embed text: <@367144932424679427>
-  let m = text.match(/<@(\d{17,19})>/);
-  if (m) return m[1];
-  // "ID: 367144932424679427" or "ID : 367144932424679427"
-  m = text.match(/ID\s*:\s*(\d{17,19})/i);
-  if (m) return m[1];
-  if (isJoinNotification(text)) {
-    m = text.match(/\b(\d{17,19})\b/);
-    if (m) return m[1];
-  }
-  return null;
-}
-function shouldWelcomeFromAdmin(userId) {
-  return !adminJoinWelcomed.has(userId);
-}
+// User IDs we've already welcomed via guildMemberAdd (clear on leave so we re-welcome if they rejoin)
+const welcomedUserIds = new Set();
 function recordAdminWelcome(userId) {
-  adminJoinWelcomed.add(userId);
+  welcomedUserIds.add(userId);
 }
 
 // Slur reply tracking: first offense = GIF, repeated/spam = video. Entries reset after SLUR_TRACK_TTL_MS.
@@ -368,7 +327,7 @@ const client = new Client({
 client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
-  console.log(`Admin join channel (live messages only): ${ADMIN_JOIN_CHANNEL_ID}`);
+  console.log(`Welcomes only from guildMemberAdd (+ first role); admin channel ignored for welcome`);
 });
 
 // When a user joins the server, post the welcome video in gv-general (record so scan/messageCreate won't welcome again)
@@ -389,7 +348,7 @@ client.on('guildMemberAdd', async (member) => {
 
 // When a user leaves, allow re-welcome if they rejoin
 client.on('guildMemberRemove', (member) => {
-  adminJoinWelcomed.delete(member.id);
+  welcomedUserIds.delete(member.id);
 });
 
 // When a new user picks one of the nation roles for the first time: notify new-arrivals and welcome in gv-general
@@ -430,24 +389,8 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async (message) => {
   const channelId = String(message.channelId);
 
-  // Admin channel: "Member joined" / "User joined ID: ..." / embeds — welcome that user in gv-general (we do this even for bot messages)
+  // Admin channel: ignore for welcome — we only welcome via guildMemberAdd (and role assign) so we never post on "Member left" from Carl-bot
   if (channelId === ADMIN_JOIN_CHANNEL_ID) {
-    const rawContent = getMessageTextForJoinCheck(message);
-    let userId = message.mentions?.users?.first()?.id || extractUserIdFromJoinMessage(rawContent);
-    if (userId && shouldWelcomeFromAdmin(userId)) {
-      try {
-        const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
-        if (generalChannel?.isTextBased()) {
-          await generalChannel.send({
-            content: `Welcome, <@${userId}>!\n${getRandomWelcomeVideoUrl()}`,
-          });
-          recordAdminWelcome(userId);
-          if (DEBUG) console.log(`[admin-join] Welcomed ${userId} in gv-general from admin channel notification`);
-        }
-      } catch (err) {
-        console.error('Admin-join welcome failed:', err);
-      }
-    }
     return; // don't run gv-general triggers for admin channel
   }
 
