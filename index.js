@@ -174,17 +174,34 @@ const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 // • Soon (Gæm?, ETA?)  → SOON_EMOJI reaction only (no delete/forward)
 // • New member welcome → random from NEW_ARRIVAL_VIDEO_URLS (e.g. streamable.com/vxi8bu, streamable.com/63lazw) in gv-general, user mentioned by ID
 
-// If the message contains any of these (game/community context or benign hobby/life talk), we do NOT trigger
-const SAFE_CONTEXT_WORDS = new Set([
+// Safe-context terms: if message contains any of these (game/community/lore), we do NOT trigger religion/politics filter.
+// Built from in-code list + Gloria Victis Wiki (https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki) + optional safe-context.txt
+const SAFE_CONTEXT_BASE = [
   'nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke',
-  'downvote', 'upvote', 'voted', 'voting', 'sub', // casual voting/sub (e.g. "voted downvote for the sub")
-  'grayward', 'gv', // community/game name (avoids "war" in "Grayward" triggering)
-  'interest', 'hobbies', 'share', 'experience', 'personal', // hobby/life context ("share an interest", "personal experience")
-  'another round', 'round in', // gaming/activity ("another round in JC" = game/server, not religion)
-  'emperor', 'represent', // lore/roleplay ("represent'n' the emperor" = in-universe, not politics)
-  'jc', 'jarnclan', 'jarn', // JC = JarnClan (game/clan), not Jesus Christ
-  'destiny', // game/lore ("destiny of the player base", nation choice), not religion
-].map(w => w.toLowerCase()));
+  'downvote', 'upvote', 'voted', 'voting', 'sub',
+  'grayward', 'gv',
+  'interest', 'hobbies', 'share', 'experience', 'personal',
+  'another round', 'round in',
+  'emperor', 'represent',
+  'jc', 'jarnclan', 'jarn',
+  'destiny',
+  // Gloria Victis Wiki – game/lore so "war", "empire", "worship" etc. don't trigger
+  'state of war', 'gloria victis', 'black eye games',
+  'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismirs', 'sangmar', 'sangarians',
+  'empire of azebia', 'azebian', 'midlandic', 'sangmar empire',
+  'forefather', 'greatfather', 'khagan', 'zenith',
+  'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
+  'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
+  'geliand', 'hillead', 'infidels', 'island', 'fashion', 'chests', 'titles', 'interfaces', 'map',
+];
+function loadSafeContextWords() {
+  const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
+    .filter(w => !w.startsWith('#'));
+  const all = [...new Set([...SAFE_CONTEXT_BASE.map(w => w.toLowerCase()), ...fromFile])];
+  return new Set(all);
+}
+const SAFE_CONTEXT_WORDS = loadSafeContextWords();
+console.log(`Safe-context terms: ${SAFE_CONTEXT_WORDS.size} (GV Wiki + safe-context.txt)`);
 
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass).
 // Includes common evasive spellings users type to avoid filters.

@@ -1,0 +1,4 @@
+# One term per line (or comma-separated). Terms here = message won't trigger religion/politics filter.
+# Gloria Victis / game context – add more from https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki
+# (In-code list already includes: state of war, nations, midland, azebia, sangmar, crafting, etc.)
+
