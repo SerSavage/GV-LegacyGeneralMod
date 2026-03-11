@@ -387,6 +387,9 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 });
 
 client.on('messageCreate', async (message) => {
+  // Never read or process DMs. Message Content Intent is required for gv-general only; we ignore all DM messages.
+  if (!message.guild) return;
+
   const channelId = String(message.channelId);
 
   // Admin channel: ignore for welcome — we only welcome via guildMemberAdd (and role assign) so we never post on "Member left" from Carl-bot

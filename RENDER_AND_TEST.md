@@ -1,5 +1,17 @@
 # Render env vars and quick test
 
+## Deploy fails with "Used disallowed intents"
+
+If the bot crashes on Render with `Error: Used disallowed intents`, enable **Privileged Gateway Intents** in the Discord Developer Portal:
+
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications) → your app → **Bot**.
+2. Under **Privileged Gateway Intents**, turn **ON**:
+   - **SERVER MEMBERS INTENT** (for `guildMemberAdd` / welcomes)
+   - **MESSAGE CONTENT INTENT** (for reading message text in gv-general)
+3. Click **Save Changes**, then redeploy on Render.
+
+---
+
 ## What TRIGGER_CHANNEL_ID is for
 
 **TRIGGER_CHANNEL_ID** = the channel where the bot **listens for messages** (slurs, off-topic, religion/politics, Soon, etc.). That channel is **#gv-general**, not off-topic.
@@ -28,6 +40,17 @@ In Render: your service → **Environment** tab.
 **Minimal setup:** only **DISCORD_TOKEN** is required. Leave the rest unset to use defaults.
 
 **If triggers still don’t run in gv-general:** In Discord Developer Portal → Bot → **Privileged Gateway Intents**, turn **MESSAGE CONTENT INTENT** and **SERVER MEMBERS INTENT** ON and save.
+
+---
+
+## Privacy: DMs and Message Content Intent
+
+Discord's [Message Content FAQ](https://support-dev.discord.com/hc/en-us/articles/4404772028055) says that with Message Content Intent enabled, bots can receive message content in DMs. This bot does not use DM content:
+
+- **In code:** The first thing the `messageCreate` handler does is `if (!message.guild) return;` so every DM is ignored. No DM text is processed, logged, or stored.
+- **In practice:** Message Content Intent is used only to read messages in #gv-general (and for the off-topic to gv-general image move). The bot never acts on or stores anything from DMs.
+
+You can confirm this in `index.js`: the handler exits immediately when there is no guild (i.e. when the message is from a DM).
 
 ---
 
