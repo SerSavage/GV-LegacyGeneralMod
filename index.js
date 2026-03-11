@@ -29,7 +29,7 @@ const FORWARDED_MEDIA_DIR = process.env.FORWARDED_MEDIA_DIR || path.join(process
 const FORWARDED_MEDIA_EXTENSIONS = /\.(jpe?g|png|gif|webp|mp4|webm|mov|mp3|wav|m4a|ogg)$/i;
 // RSS feed → Discord announcement channel (e.g. Gloria Victis news). If the site has no RSS, use a converter like https://rss.app/ with the news page URL.
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1166742322738905178';
-const RSS_FEED_URL = process.env.RSS_FEED_URL || ''; // e.g. from rss.app for https://en.gamigo.com/game/gloria-victis
+const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bRtM0TKZJF.xml'; // Gloria Victis | gamigo news (override with env if needed)
 const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
@@ -465,6 +465,8 @@ const rssParser = new Parser({ timeout: 15000 });
 const RSS_FETCH_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Referer': 'https://www.google.com/',
 };
 
 // --- Discord bot ---
@@ -482,18 +484,39 @@ client.once('clientReady', () => {
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Welcomes only from guildMemberAdd (+ first role); admin channel ignored for welcome`);
 
-  // RSS feed → announcement channel (only if RSS_FEED_URL is set)
+  // RSS feed → announcement channel: Gloria Victis news only, from today forward (no old items)
   if (RSS_FEED_URL && ANNOUNCEMENT_CHANNEL_ID) {
+    const startOfTodayUtc = () => {
+      const d = new Date();
+      d.setUTCHours(0, 0, 0, 0);
+      return d.getTime();
+    };
+    const isGloriaVictisItem = (item) => {
+      const t = (item.title || '').toLowerCase();
+      const l = (item.link || '').toLowerCase();
+      return t.includes('gloria victis') || l.includes('gloria-victis');
+    };
+    const isFromTodayOrLater = (item) => {
+      const pub = item.pubDate;
+      if (!pub) return false;
+      const ts = pub instanceof Date ? pub.getTime() : new Date(pub).getTime();
+      return !Number.isNaN(ts) && ts >= startOfTodayUtc();
+    };
     const runRssPoll = async () => {
       try {
         const res = await fetch(RSS_FEED_URL, { headers: RSS_FETCH_HEADERS, signal: AbortSignal.timeout(15000) });
-        if (!res.ok) throw new Error(`Status code ${res.status}`);
+        if (!res.ok) {
+          const host = (() => { try { return new URL(RSS_FEED_URL).host; } catch { return 'feed'; } })();
+          throw new Error(`Status code ${res.status} from ${host} (feed server blocks request; Discord channel is fine)`);
+        }
         const xml = await res.text();
         const feed = await rssParser.parseString(xml);
         const channel = await client.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
         if (!channel?.isTextBased()) return;
         let posted = 0;
         for (const item of feed.items || []) {
+          if (!isGloriaVictisItem(item)) continue;
+          if (!isFromTodayOrLater(item)) continue;
           const id = item.guid || item.link || item.title;
           if (!id || rssSeen.has(id)) continue;
           rssSeen.add(id);
@@ -505,9 +528,10 @@ client.once('clientReady', () => {
           posted++;
           saveRssSeen(rssSeen);
         }
-        if (DEBUG && posted > 0) console.log(`[rss] Posted ${posted} item(s) to announcement channel`);
+        if (DEBUG && posted > 0) console.log(`[rss] Posted ${posted} Gloria Victis item(s) to announcement channel`);
       } catch (err) {
         console.error('RSS poll failed:', err.message || err);
+        // 403 = feed URL blocks requests from Render's IP. Try another RSS source or leave RSS_FEED_URL unset to disable.
       }
     };
     runRssPoll();
