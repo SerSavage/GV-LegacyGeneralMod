@@ -461,7 +461,11 @@ function saveRssSeen(seen) {
   }
 }
 const rssSeen = loadRssSeen();
-const rssParser = new Parser({ timeout: 10000 });
+const rssParser = new Parser({ timeout: 15000 });
+const RSS_FETCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+};
 
 // --- Discord bot ---
 const client = new Client({
@@ -482,7 +486,10 @@ client.once('clientReady', () => {
   if (RSS_FEED_URL && ANNOUNCEMENT_CHANNEL_ID) {
     const runRssPoll = async () => {
       try {
-        const feed = await rssParser.parseURL(RSS_FEED_URL);
+        const res = await fetch(RSS_FEED_URL, { headers: RSS_FETCH_HEADERS, signal: AbortSignal.timeout(15000) });
+        if (!res.ok) throw new Error(`Status code ${res.status}`);
+        const xml = await res.text();
+        const feed = await rssParser.parseString(xml);
         const channel = await client.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
         if (!channel?.isTextBased()) return;
         let posted = 0;
