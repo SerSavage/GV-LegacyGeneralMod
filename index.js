@@ -12,6 +12,8 @@ const TRIGGER_CHANNEL_ID = String(process.env.TRIGGER_CHANNEL_ID || '11667384175
 const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // channel to post new-arrival video
 // Admin channel that gets join notifications — when we see a join message here, we welcome that user in gv-general (fallback if guildMemberAdd doesn't fire)
 const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
+const ADMIN_JOIN_SCAN_INTERVAL_MS = Math.max(30000, parseInt(process.env.ADMIN_JOIN_SCAN_INTERVAL_MS, 10) || 60000); // scan admin channel every 1 min for missed joins
+const ADMIN_JOIN_WELCOMED_TTL_MS = 2 * 60 * 1000; // don't welcome same user again within 2 min (avoids duplicate from messageCreate + scan)
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
 const REDIRECT_CHANNEL_ID = '1168446788810842172';
@@ -286,6 +288,30 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
 
 // Track users we've already welcomed for picking a nation role (first-time only)
 const welcomedForNationRoleByUser = new Set();
+// Admin join: userId -> last welcome timestamp (so we don't double-welcome from messageCreate + periodic scan)
+const adminJoinWelcomedAt = new Map();
+function isJoinNotification(text) {
+  if (!text || typeof text !== 'string') return false;
+  const c = text.toLowerCase();
+  return /\b(member\s+joined|joined|welcome|just\s+joined)\b/i.test(c) || c.includes('joined the server') || c.includes('user joined');
+}
+function extractUserIdFromJoinMessage(text) {
+  if (!text || typeof text !== 'string') return null;
+  let m = text.match(/ID\s*:\s*(\d{17,19})/i);
+  if (m) return m[1];
+  if (isJoinNotification(text)) {
+    m = text.match(/\b(\d{17,19})\b/);
+    if (m) return m[1];
+  }
+  return null;
+}
+function shouldWelcomeFromAdmin(userId) {
+  const at = adminJoinWelcomedAt.get(userId);
+  return !at || (Date.now() - at > ADMIN_JOIN_WELCOMED_TTL_MS);
+}
+function recordAdminWelcome(userId) {
+  adminJoinWelcomedAt.set(userId, Date.now());
+}
 
 // Slur reply tracking: first offense = GIF, repeated/spam = video. Entries reset after SLUR_TRACK_TTL_MS.
 const SLUR_TRACK_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -323,6 +349,32 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Admin join fallback channel: ${ADMIN_JOIN_CHANNEL_ID}`);
+
+  // Scan admin channel for missed joins: once after 10s (catch joins while bot was down), then every 1 min
+  const runAdminJoinScan = async () => {
+    try {
+      const channel = await client.channels.fetch(ADMIN_JOIN_CHANNEL_ID);
+      if (!channel?.isTextBased() || !('messages' in channel)) return;
+      const messages = await channel.messages.fetch({ limit: 25 });
+      for (const msg of messages.values()) {
+        if (msg.author?.id === client.user?.id) continue;
+        const raw = msg.content || '';
+        const userId = msg.mentions?.users?.first()?.id || extractUserIdFromJoinMessage(raw);
+        if (!userId || !shouldWelcomeFromAdmin(userId)) continue;
+        const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
+        if (!generalChannel?.isTextBased()) continue;
+        await generalChannel.send({
+          content: `Welcome, <@${userId}>!\n${getRandomWelcomeVideoUrl()}`,
+        });
+        recordAdminWelcome(userId);
+        if (DEBUG) console.log(`[admin-join-scan] Welcomed ${userId} in gv-general (missed earlier)`);
+      }
+    } catch (err) {
+      if (DEBUG) console.error('Admin join scan failed:', err.message);
+    }
+  };
+  setTimeout(runAdminJoinScan, 10000);
+  setInterval(runAdminJoinScan, ADMIN_JOIN_SCAN_INTERVAL_MS);
 });
 
 // When a user joins the server, post the welcome video in gv-general
@@ -378,24 +430,19 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async (message) => {
   const channelId = String(message.channelId);
 
-  // Admin channel: Carl-bot "Member joined" (or any message with "joined"/"welcome") — welcome that user in gv-general (we do this even for bot messages so we see Carl-bot's join logs)
+  // Admin channel: "Member joined" / "User joined ID: 440675174245990400" — welcome that user in gv-general (we do this even for bot messages)
   if (channelId === ADMIN_JOIN_CHANNEL_ID) {
     const rawContent = message.content || '';
-    const content = rawContent.toLowerCase();
-    const hasJoinKeyword = /\b(member joined|joined|welcome|just joined)\b/i.test(content) || content.includes('joined the server');
-    let userToWelcome = message.mentions?.users?.first();
-    if (!userToWelcome && hasJoinKeyword) {
-      const idMatch = rawContent.match(/ID:\s*(\d{17,19})/i);
-      if (idMatch) userToWelcome = { toString: () => `<@${idMatch[1]}>`, tag: idMatch[1] };
-    }
-    if (hasJoinKeyword && userToWelcome) {
+    let userId = message.mentions?.users?.first()?.id || extractUserIdFromJoinMessage(rawContent);
+    if (userId && shouldWelcomeFromAdmin(userId)) {
       try {
         const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
         if (generalChannel?.isTextBased()) {
           await generalChannel.send({
-            content: `Welcome, ${userToWelcome.toString()}!\n${getRandomWelcomeVideoUrl()}`,
+            content: `Welcome, <@${userId}>!\n${getRandomWelcomeVideoUrl()}`,
           });
-          if (DEBUG) console.log(`[admin-join] Welcomed ${userToWelcome.tag} in gv-general from admin channel notification`);
+          recordAdminWelcome(userId);
+          if (DEBUG) console.log(`[admin-join] Welcomed ${userId} in gv-general from admin channel notification`);
         }
       } catch (err) {
         console.error('Admin-join welcome failed:', err);
