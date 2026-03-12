@@ -62,9 +62,12 @@ function buildSoonTriggerPhrases() {
   const phrases = new Set();
   const add = (p) => { if (p && p.length > 0) phrases.add(p.toLowerCase()); };
 
-  // Only short triggers (single/two word): Gæm?, Gæm when?, When game?, When game
+  // Short triggers: gæm variants + When game
   add('gæm?');
   add('gæm when?');
+  add('when gæm?');
+  add('gæm');
+  add('when gæm');
   add('when game?');
   add('when game');
 
@@ -464,10 +467,13 @@ function isMostlyReligionPolitics(text) {
 
 // Check if message is asking about game/servers/ETA (triggers "Soon" emoji reaction)
 // Single-word phrases use word-boundary so "game" doesn't trigger on "games" / "windows games" / compatibility questions
+// "tomorrow" / "tomorrow..." trigger only when the whole message is just that (no other words)
 function hasSoonTrigger(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase().trim();
   if (!lower) return false;
+  // Standalone-only: "tomorrow", "tomorrow...", "tomorrow?" etc. — not inside other sentences
+  if (/^tomorrow[.?\s]*$/.test(lower)) return true;
   return SOON_TRIGGER_PHRASES.some(phrase => {
     if (phrase.includes(' ')) return lower.includes(phrase);
     const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
