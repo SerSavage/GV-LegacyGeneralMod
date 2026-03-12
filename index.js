@@ -35,8 +35,6 @@ const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
-const NEW_USER_JOIN_DAYS = Math.max(0, parseInt(process.env.NEW_USER_JOIN_DAYS, 10) || 7); // only welcome if joined within this many days
-const NEW_USER_JOIN_WINDOW_MS = NEW_USER_JOIN_DAYS * 24 * 60 * 60 * 1000;
 // Welcome videos when user joins or gets their role — one is picked at random (add more via env NEW_ARRIVAL_VIDEO_URLS comma-separated, or use defaults)
 const NEW_ARRIVAL_VIDEO_URLS = (process.env.NEW_ARRIVAL_VIDEO_URLS || process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu,https://streamable.com/63lazw')
   .split(',')
@@ -581,6 +579,8 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
 const welcomedForNationRoleByUser = new Set();
 // User IDs we've already welcomed via guildMemberAdd (clear on leave so we re-welcome if they rejoin)
 const welcomedUserIds = new Set();
+// When the bot became ready — we only welcome users who joined *after* this (no scan/trigger for earlier joins)
+let botReadyAt = 0;
 function recordAdminWelcome(userId) {
   welcomedUserIds.add(userId);
 }
@@ -646,6 +646,7 @@ const client = new Client({
 });
 
 client.once('clientReady', () => {
+  botReadyAt = Date.now();
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Welcomes only from guildMemberAdd (+ first role); admin channel ignored for welcome`);
@@ -739,7 +740,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role (e.g. switching to another)
 
   const joinedAt = newMember.joinedAt ? newMember.joinedAt.getTime() : 0;
-  if (Date.now() - joinedAt > NEW_USER_JOIN_WINDOW_MS) return; // not a "new" user (joined too long ago)
+  if (joinedAt === 0 || joinedAt < botReadyAt) return; // only welcome if they joined after bot became active (no older users)
 
   welcomedForNationRoleByUser.add(userId);
   try {
