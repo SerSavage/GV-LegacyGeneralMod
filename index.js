@@ -44,7 +44,7 @@ function getRandomWelcomeVideoUrl() {
   return NEW_ARRIVAL_VIDEO_URLS[Math.floor(Math.random() * NEW_ARRIVAL_VIDEO_URLS.length)] || 'https://streamable.com/vxi8bu';
 }
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
-// Images for "Chronicus Generalium" reply in gv-general when user is moved to off-topic — one picked at random
+// Images for "Chronicus Generalium" reply in gv-general when user is moved to off-topic — one picked at random (not used for Soon)
 const CHRONICUS_MEME_PATHS = [
   path.join(process.cwd(), 'assets', 'memes', 'v11.png'),
   path.join(process.cwd(), 'assets', 'memes', 'file_00000000fb88720a807a57aff20e418a.png'),
@@ -54,6 +54,17 @@ function getRandomChronicusMeme() {
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
 }
 const CHRONICUS_TEXT = '**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***';
+
+// Images for Soon trigger only (game/servers/ETA questions): when can we play, is the game up, any eta, etc. — one picked at random, posted with :soon: reaction
+const SOON_MEME_PATHS = [
+  path.join(process.cwd(), 'assets', 'memes', 'file_000000001b3471fbbf4e0eb00f4c1467.png'),
+  path.join(process.cwd(), 'assets', 'memes', 'file_000000003ff87246a4a7611f400bbdd8.png'),
+  path.join(process.cwd(), 'assets', 'memes', 'file_000000006138720aa48dcc9d3d67b177.png'),
+];
+function getRandomSoonMeme() {
+  const existing = SOON_MEME_PATHS.filter(p => fs.existsSync(p));
+  return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
+}
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
 // Only short triggers: "gæm?" and "gæm when?"; rest are multi-word phrases (substring match)
@@ -111,6 +122,47 @@ function buildSoonTriggerPhrases() {
 }
 const SOON_TRIGGER_PHRASES = buildSoonTriggerPhrases();
 console.log(`Soon trigger phrases: ${SOON_TRIGGER_PHRASES.length}`);
+
+// Multi-word game-related phrases only: when these trigger Soon, we also post a Soon meme image. Short triggers (gæm?, tomorrow) get :soon: reaction only, no image.
+const SOON_IMAGE_PHRASES = [
+  'when can we play', 'when can i play', 'is the game up', 'when is the game up', 'is the game open', 'when is the game open',
+  'when does the game open', 'when will the game open', 'when does it open', 'when will it open',
+  'are servers open', 'when do servers open', 'when will servers open', 'is server up', 'are servers up',
+  'when can we play the game', 'when can i play the game', 'can we play', 'can i play', 'can we play yet', 'can i play yet',
+  'ready to play', 'when can we get in', 'can we get in', 'can i get in', 'when can we get in the game',
+  'get in the game', 'join the game', 'when can we join',
+  'any eta', "what's the eta", 'whats the eta', 'got an eta', 'have an eta',
+  "when's it out", 'when is it out', "when's the release", 'when is the release', 'release the game',
+  "when's the game coming", 'when is the game coming', 'game coming out', 'when coming out',
+  'any news on the game', 'any word on the game', 'any update on the game', "when's the update", 'when is the update',
+  'maintenance over', 'maintenance done', 'servers back', 'server back', 'is it back up',
+  'game live', 'is it live', 'are we live', 'when is the game live', "when's the game live",
+  'is the game ready', 'when can we start', 'when can i start', 'when will we be able to play',
+  'when can we access', 'when can i access', 'access the game',
+  'is server working', 'are servers working', 'game working',
+  "when's the beta", 'when is the beta', 'when early access', 'early access yet',
+  'when closed beta', 'when stress test', 'when beta test',
+  "when's downtime over", 'maintenance when', 'when maintenance', 'when patch out', 'when update',
+  'when hotfix', 'when fix', 'is it back', 'are we back',
+  'when can we hop on', 'hop on the game',
+  "when's it dropping", 'when is it dropping', 'game drop when',
+  "when's launch", 'when is launch', "when's launch date", 'when release date', "when's the release date",
+  'any info on the game', 'any info on servers', 'can we play today',
+  'game tomorrow', 'servers tomorrow', 'when tomorrow', 'game this week', 'servers this week',
+  'release this week', 'game this weekend', 'play this weekend', 'game next week', 'servers next week',
+  'waiting for game', 'waiting for servers', 'waiting to play', 'when can we stop waiting',
+  'still no game', 'still no servers', 'no game yet', 'no servers yet', 'game not out', 'servers not up',
+  'not open yet', 'not up yet', 'not live yet', 'game delayed', 'release delayed', "when's the delay",
+  'game postponed', 'release postponed', 'game pushed back',
+  'how soon until', 'how long until', 'how long until we can play', 'how long until servers', 'how long until game',
+  'how much longer until', 'should be soon', 'supposed to be soon', 'was supposed to open',
+  'was supposed to be up', 'should be up', 'should be open', 'should be live', 'must be soon',
+];
+function hasSoonTriggerWithImage(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase().trim();
+  return SOON_IMAGE_PHRASES.some(phrase => lower.includes(phrase));
+}
 
 // Multiple GIFs – one is picked at random when replying
 const TENOR_GIFS = [
@@ -801,12 +853,22 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // "Soon" trigger: Gæm?, ETA?, Servers open?, When can we play?, etc. — react with Soon emoji only (no delete/forward)
+  // "Soon" trigger: react with :soon:; for game-related phrases only (when can we play, is the game up, any eta, etc.) also post a random Soon meme image
   if (hasSoonTrigger(message.content)) {
     try {
       await message.react(SOON_EMOJI);
     } catch (err) {
       console.error('Soon emoji reaction failed (emoji must exist in this server):', err.message);
+    }
+    if (hasSoonTriggerWithImage(message.content)) {
+      try {
+        const soonMemePath = getRandomSoonMeme();
+        if (soonMemePath) {
+          await message.reply({ files: [{ attachment: soonMemePath, name: path.basename(soonMemePath) }] });
+        }
+      } catch (err) {
+        console.error('Soon meme reply failed:', err.message);
+      }
     }
     return;
   }
