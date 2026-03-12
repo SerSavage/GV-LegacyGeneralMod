@@ -380,10 +380,14 @@ function hasSpamSlur(text) {
   return SPAM_SLUR_TERMS.some(term => lower.includes(term));
 }
 
+// Exception: "mad men" / "lunatics" in idiom/quote context (e.g. "nation filled with mad men and lunatics") — don't trigger off-topic
+const OFF_TOPIC_SAFE_PHRASES = ['mad men', 'mad man', 'lunatics', 'lunatic'];
+
 // Check if message contains any off-topic phrase (case-insensitive substring)
 function hasOffTopicPhrase(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
+  if (OFF_TOPIC_SAFE_PHRASES.some(safe => lower.includes(safe))) return false;
   return OFF_TOPIC_PHRASES.some(phrase => lower.includes(phrase));
 }
 
