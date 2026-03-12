@@ -62,9 +62,11 @@ function buildSoonTriggerPhrases() {
   const phrases = new Set();
   const add = (p) => { if (p && p.length > 0) phrases.add(p.toLowerCase()); };
 
-  // Only short triggers (single/two word): Gæm? and Gæm when?
+  // Only short triggers (single/two word): Gæm?, Gæm when?, When game?, When game
   add('gæm?');
   add('gæm when?');
+  add('when game?');
+  add('when game');
 
   // Multi-word phrases: "when can we play", "is the game up", "when is the game up", etc.
   [
