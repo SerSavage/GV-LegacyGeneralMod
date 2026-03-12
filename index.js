@@ -56,101 +56,50 @@ function getRandomChronicusMeme() {
 const CHRONICUS_TEXT = '**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***';
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
+// Only short triggers: "gæm?" and "gæm when?"; rest are multi-word phrases (substring match)
 const SOON_EMOJI = '<:Soon:1480665289715617842>';
 function buildSoonTriggerPhrases() {
   const phrases = new Set();
   const add = (p) => { if (p && p.length > 0) phrases.add(p.toLowerCase()); };
 
-  // game / gaem / gæm variants
-  ['game', 'gaem', 'gæm', 'gamm', 'gaeme'].forEach(g => {
-    add(g); add(g + '?'); add(g + ' up'); add(g + ' up?'); add(g + ' open'); add(g + ' open?');
-    add('when ' + g); add('when\'s ' + g); add('when is ' + g); add('when\'s the ' + g); add('when is the ' + g);
-    add('is the ' + g + ' up'); add('is ' + g + ' up'); add('is ' + g + ' up?'); add('is the ' + g + ' out');
-    add(g + ' when'); add(g + ' when?'); add('when does ' + g + ' open'); add('when will ' + g + ' open');
-    add('when can we play ' + g); add('when can i play ' + g); add('when can we play'); add('when can i play');
-  });
+  // Only short triggers (single/two word): Gæm? and Gæm when?
+  add('gæm?');
+  add('gæm when?');
 
-  // server(s) open/up/live
-  ['server', 'servers', 'servr', 'servrs'].forEach(s => {
-    add(s + ' open'); add(s + ' open?'); add(s + ' up'); add(s + ' up?'); add(s + ' live'); add(s + ' live?');
-    add('is ' + s + ' open'); add('are ' + s + ' open'); add('is the ' + s + ' open'); add('are the ' + s + ' open');
-    add(s + ' open yet'); add(s + ' up yet'); add('when do ' + s + ' open'); add('when will ' + s + ' open');
-    add('when are ' + s + ' open'); add('when is ' + s + ' open'); add('when ' + s + ' open'); add('when ' + s + ' up');
-    add('servers status'); add('server status');
-  });
-  add('open yet'); add('up yet'); add('is it open yet'); add('are we live'); add('is it live'); add('are servers up');
-  add('is server up'); add('servers online'); add('server online'); add('game online'); add('game live');
-
-  // play / can we play / when can we
-  ['play', 'play yet', 'play now', 'can we play', 'can we play?', 'can we play yet', 'can i play', 'can i play?', 'can i play yet',
-   'when can we play', 'when can we play?', 'when can i play', 'when can i play?', 'can we play now', 'can i play now',
-   'ready to play', 'when can we play the game', 'when can i play the game', 'able to play', 'when can we get in',
-   'can we get in', 'can i get in', 'when can we get in the game', 'get in the game', 'join the game', 'when can we join'].forEach(add);
-
-  // ETA / when / release / launch
-  ['eta', 'eta?', 'any eta', 'what\'s the eta', 'whats the eta', 'any eta?', 'got an eta', 'got a eta', 'have an eta',
-   'when\'s it out', 'when is it out', 'when out', 'when\'s the release', 'when is the release', 'release when',
-   'release date', 'when release', 'when\'s release', 'launch when', 'when launch', 'when\'s launch', 'when is launch',
-   'when does it open', 'when will it open', 'when does the game open', 'when will the game open', 'when is the game open',
-   'game release', 'game release?', 'when game release', 'release the game', 'when\'s the game coming', 'when is the game coming',
-   'game coming out', 'when coming out', 'when\'s it coming', 'when is it coming', 'any news on', 'any news on the game',
-   'any word on', 'any word on the game', 'heard anything about', 'heard anything about the game', 'any update on',
-   'any update on the game', 'when\'s the update', 'when is the update', 'update when', 'patch when', 'when patch',
-   'maintenance over', 'maintenance done', 'servers back', 'server back', 'back up yet', 'is it back up'].forEach(add);
-
-  // "game when" style
-  ['game when', 'game when?', 'game out when', 'game out?', 'game ready', 'game ready?', 'game available', 'game available?',
-   'game drop', 'game drop?', 'when drop', 'when\'s the drop', 'game live yet', 'live yet', 'playable yet', 'is it playable',
-   'can we play yet', 'we can play yet', 'can we get on', 'when can we get on', 'get on the game', 'when get on',
-   'log in yet', 'can we log in', 'when can we log in', 'login yet', 'servers back up', 'server back up',
-   'anyone know when', 'anyone know when the game', 'anyone know when servers', 'know when the game', 'know when servers',
-   'when we getting', 'when we getting the game', 'when are we getting', 'when we get to play', 'time to play',
-   'is it time to play', 'can we start playing', 'when can we start playing', 'start playing', 'playing yet',
-   'are we playing', 'we playing yet', 'game time', 'game time?', 'when game time', 'game out yet', 'out yet',
-   'game up yet', 'up yet', 'still down', 'game still down', 'servers still down', 'server still down',
-   'when\'s it live', 'when is it live', 'when\'s the game live', 'when is the game live', 'going live', 'when going live',
-   'going up', 'when going up', 'coming up', 'when coming up', 'opening when', 'when opening', 'opens when',
-   'when does it go live', 'when will it go live', 'when do servers go live', 'when will servers go live',
-   'gæm?', 'gaem?', 'game?', 'wen game', 'wen gaem', 'when gaem', 'when gæm', 'whn game', 'whens game',
-   'game wen', 'gaem when', 'servers wen', 'wen servers', 'when servrs', 'play wen', 'wen play',
-   'can we play rn', 'can i play rn', 'play rn', 'game rn', 'servers rn', 'up rn', 'open rn',
-   'any chance we can play', 'any chance to play', 'any chance the game', 'any chance servers',
-   'is the game out', 'game out', 'game out?', 'when\'s the game out', 'when is the game out',
-   'game available yet', 'available yet', 'ready yet', 'is it ready', 'is the game ready',
-   'when will we be able to play', 'when can we start', 'when can i start', 'able to play yet',
-   'can we access', 'when can we access', 'when can i access', 'access the game', 'game access',
-   'servers working', 'server working', 'is server working', 'are servers working', 'game working',
-   'when\'s the beta', 'when is the beta', 'beta when', 'beta out', 'beta open', 'when beta',
-   'early access when', 'when early access', 'early access yet', 'open beta', 'open beta?',
-   'closed beta when', 'when closed beta', 'alpha when', 'when alpha', 'test when', 'when test',
-   'stress test', 'when stress test', 'beta test when', 'when beta test', 'playtest when',
-   'downtime over', 'downtime done', 'when\'s downtime over', 'maintenance when', 'when maintenance',
-   'patch out', 'patch out?', 'when patch out', 'update out', 'update out?', 'when update',
-   'hotfix when', 'when hotfix', 'fix when', 'when fix', 'back online', 'online yet',
-   'game back', 'servers back yet', 'back yet', 'is it back', 'are we back', 'we back',
-   'can we hop on', 'when can we hop on', 'hop on', 'hop on the game', 'get on yet',
-   'when\'s it dropping', 'when is it dropping', 'when dropping', 'drop when', 'game drop when',
-   'launch when', 'when\'s launch', 'when is launch', 'launch date', 'launch date?', 'when\'s launch date',
-   'release date?', 'when release date', 'release when', 'when\'s the release date', 'release the game when',
-   'any info on', 'any info on the game', 'any info on servers', 'got info', 'any news', 'any news?',
-   'when we playing', 'we playing', 'playing today', 'play today', 'can we play today',
-   'tomorrow', 'game tomorrow', 'servers tomorrow', 'open tomorrow', 'when tomorrow',
-   'this week', 'game this week', 'servers this week', 'release this week', 'this weekend',
-   'game this weekend', 'play this weekend', 'next week', 'game next week', 'servers next week',
-   'still waiting', 'waiting for game', 'waiting for servers', 'waiting to play', 'when can we stop waiting',
-   'im waiting', 'i\'m waiting', 'we waiting', 'still no game', 'still no servers', 'no game yet',
-   'no servers yet', 'game not out', 'servers not up', 'not open yet', 'not up yet', 'not live yet',
-   'delayed', 'game delayed', 'release delayed', 'when\'s the delay', 'delay when', 'delayed when',
-   'postponed', 'game postponed', 'release postponed', 'pushed back', 'game pushed back',
-   'wen', 'wen game', 'wen servers', 'wen play', 'wen open', 'wen up', 'wen release', 'wen launch',
-   'whn', 'whens', 'when\'s', 'when is', 'when are', 'when will', 'when do', 'when can',
-   'game when', 'gaem when', 'gæm when', 'servers when', 'server when', 'play when', 'open when',
-   'when game', 'when gaem', 'when gæm', 'when servers', 'when server', 'when play', 'when open',
-   'game?', 'gaem?', 'gæm?', 'servers?', 'server?', 'play?', 'open?', 'up?', 'eta?',
-   'soon?', 'when soon', 'how soon', 'how soon until', 'how long until', 'how long until we can play',
-   'how long until servers', 'how long until game', 'how much longer', 'how much longer until',
-   'any minute now', 'any time now', 'should be soon', 'supposed to be soon', 'was supposed to open',
-   'was supposed to be up', 'should be up', 'should be open', 'should be live', 'must be soon',
+  // Multi-word phrases: "when can we play", "is the game up", "when is the game up", etc.
+  [
+    'when can we play', 'when can i play', 'is the game up', 'when is the game up', 'is the game open', 'when is the game open',
+    'when does the game open', 'when will the game open', 'when does it open', 'when will it open',
+    'are servers open', 'when do servers open', 'when will servers open', 'is server up', 'are servers up',
+    'when can we play the game', 'when can i play the game', 'can we play', 'can i play', 'can we play yet', 'can i play yet',
+    'ready to play', 'when can we get in', 'can we get in', 'can i get in', 'when can we get in the game',
+    'get in the game', 'join the game', 'when can we join',
+    'any eta', "what's the eta", 'whats the eta', 'got an eta', 'have an eta',
+    "when's it out", 'when is it out', "when's the release", 'when is the release', 'release the game',
+    "when's the game coming", 'when is the game coming', 'game coming out', 'when coming out',
+    'any news on the game', 'any word on the game', 'any update on the game', "when's the update", 'when is the update',
+    'maintenance over', 'maintenance done', 'servers back', 'server back', 'is it back up',
+    'game live', 'is it live', 'are we live', 'when is the game live', "when's the game live",
+    'is the game ready', 'when can we start', 'when can i start', 'when will we be able to play',
+    'when can we access', 'when can i access', 'access the game',
+    'is server working', 'are servers working', 'game working',
+    "when's the beta", 'when is the beta', 'when early access', 'early access yet',
+    'when closed beta', 'when stress test', 'when beta test',
+    "when's downtime over", 'maintenance when', 'when maintenance', 'when patch out', 'when update',
+    'when hotfix', 'when fix', 'is it back', 'are we back',
+    'when can we hop on', 'hop on the game',
+    "when's it dropping", 'when is it dropping', 'game drop when',
+    "when's launch", 'when is launch', "when's launch date", 'when release date', "when's the release date",
+    'any info on the game', 'any info on servers', 'can we play today',
+    'game tomorrow', 'servers tomorrow', 'when tomorrow', 'game this week', 'servers this week',
+    'release this week', 'game this weekend', 'play this weekend', 'game next week', 'servers next week',
+    'waiting for game', 'waiting for servers', 'waiting to play', 'when can we stop waiting',
+    'still no game', 'still no servers', 'no game yet', 'no servers yet', 'game not out', 'servers not up',
+    'not open yet', 'not up yet', 'not live yet', 'game delayed', 'release delayed', "when's the delay",
+    'game postponed', 'release postponed', 'game pushed back',
+    'how soon until', 'how long until', 'how long until we can play', 'how long until servers', 'how long until game',
+    'how much longer until', 'should be soon', 'supposed to be soon', 'was supposed to open',
+    'was supposed to be up', 'should be up', 'should be open', 'should be live', 'must be soon',
   ].forEach(add);
 
   return [...phrases];
@@ -512,11 +461,16 @@ function isMostlyReligionPolitics(text) {
 }
 
 // Check if message is asking about game/servers/ETA (triggers "Soon" emoji reaction)
+// Single-word phrases use word-boundary so "game" doesn't trigger on "games" / "windows games" / compatibility questions
 function hasSoonTrigger(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase().trim();
   if (!lower) return false;
-  return SOON_TRIGGER_PHRASES.some(phrase => lower.includes(phrase));
+  return SOON_TRIGGER_PHRASES.some(phrase => {
+    if (phrase.includes(' ')) return lower.includes(phrase);
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('\\b' + escaped + '\\b', 'i').test(lower);
+  });
 }
 
 // Get video attachment or URL for spam reply (returns { files } or { content } for message.reply)
