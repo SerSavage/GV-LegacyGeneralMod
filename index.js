@@ -202,6 +202,7 @@ const SAFE_CONTEXT_BASE = [
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
   'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
   'geliand', 'hillead', 'infidels', 'island', 'fashion', 'chests', 'titles', 'interfaces', 'map',
+  'log in', 'login', 'log in.', 'can\'t log in', 'cant log in', // game/server – avoid triggering on "I can't log in"
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
@@ -436,7 +437,9 @@ function isPoliticalOrReligionTerm(word) {
   if (IDEOLOGICAL_TERMS.has(w)) return true;
   if (RELIGION_SINGLE_WORDS.has(w)) return true;
   for (const leader of POLITICAL_LEADERS) {
-    if (w.includes(leader) || leader.includes(w)) return true;
+    if (w.includes(leader)) return true;
+    // Only match word-as-substring-of-leader when word is at least 3 chars (avoid "i", "in", "an" matching "putin", "bin salman", etc.)
+    if (w.length >= 3 && leader.includes(w)) return true;
   }
   return false;
 }
