@@ -495,6 +495,16 @@ async function downloadUrlToFile(url, filePath) {
   return filePath;
 }
 
+// Exclude specific users from message deletion and meme/GIF reply (e.g. admin with "Savage"/"unban" in name). They still get :soon: etc.; we just never delete their msg or post Chronicus/GIF.
+function isExcludedFromDeleteAndMeme(message) {
+  const name = [
+    message.author?.username,
+    message.author?.globalName,
+    message.member?.displayName,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return /savage|unban/.test(name);
+}
+
 // Delete message in gv-general and forward it to #off-topic with user tag and same GIF/video response; then post Chronicus Generalium in gv-general
 async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
   try {
@@ -797,6 +807,7 @@ client.on('messageCreate', async (message) => {
 
   // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video. Delete in gv-general, forward to #off-topic.
   if (hasSpamSlur(message.content)) {
+    if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
     const userId = message.author.id;
     const repeated = isRepeatedSlurOffender(userId);
     recordSlurReply(userId);
@@ -808,6 +819,7 @@ client.on('messageCreate', async (message) => {
 
   // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, forward to #off-topic.
   if (hasOffTopicPhrase(message.content)) {
+    if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
     await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
     return;
   }
@@ -824,6 +836,7 @@ client.on('messageCreate', async (message) => {
   }
 
   // Religion/politics/ideological: random GIF. Delete in gv-general, forward to #off-topic.
+  if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
   await deleteInGeneralAndForwardToOffTopic(message, randomGif);
 });
