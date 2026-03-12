@@ -705,8 +705,9 @@ client.once('clientReady', () => {
   }
 });
 
-// When a user joins the server, post the welcome video in gv-general (record so scan/messageCreate won't welcome again)
+// When a user joins the server, post the welcome video in gv-general only (skip if already welcomed on role to avoid double message)
 client.on('guildMemberAdd', async (member) => {
+  if (welcomedUserIds.has(member.user.id)) return; // already welcomed on role – don't welcome again
   try {
     const channel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
     if (channel && channel.isTextBased()) {
@@ -726,7 +727,7 @@ client.on('guildMemberRemove', (member) => {
   welcomedUserIds.delete(member.id);
 });
 
-// When a new user picks one of the nation roles for the first time: notify new-arrivals and welcome in gv-general (only if we didn't already welcome them on join)
+// When a new user picks one of the nation roles (or is given a role) for the first time: welcome in gv-general only (no new-arrivals). Skip if already welcomed on join to avoid double message.
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (newMember.roles.cache.size <= oldMember.roles.cache.size) return; // no role added
   const addedRoleIds = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
@@ -734,7 +735,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (!pickedNationRole) return;
 
   const userId = newMember.user.id;
-  if (welcomedUserIds.has(userId)) return; // already welcomed on guildMemberAdd – don't welcome again for role
+  if (welcomedUserIds.has(userId)) return; // already welcomed on guildMemberAdd – don't welcome again (no double message)
   if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role (e.g. switching to another)
 
   const joinedAt = newMember.joinedAt ? newMember.joinedAt.getTime() : 0;
@@ -742,18 +743,12 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 
   welcomedForNationRoleByUser.add(userId);
   try {
-    const newArrivalsChannel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
-    if (newArrivalsChannel?.isTextBased()) {
-      await newArrivalsChannel.send({
-        content: `Welcome ${newMember.user.toString()} — they've chosen their role for the first time!\n${getRandomWelcomeVideoUrl()}`,
-      });
-      if (DEBUG) console.log(`[role-assign] Notified new-arrivals for ${newMember.user.tag} (first nation role)`);
-    }
     const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
     if (generalChannel?.isTextBased()) {
       await generalChannel.send({
         content: `Welcome, ${newMember.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
       });
+      recordAdminWelcome(userId); // count as welcomed so we don't also post on join if events are reordered
       if (DEBUG) console.log(`[role-assign] Welcome posted in gv-general for ${newMember.user.tag}`);
     }
   } catch (err) {
