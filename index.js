@@ -580,13 +580,18 @@ function hasSoonTrigger(text) {
   });
 }
 
-// "Where is Miaow?" / "Miaow is missing?" – reply with Emperor role ping + MiaowMIA image
-const MIAOW_WHERE_PHRASES = [
-  'where is miaow', "where's miaow", 'where is miaow?', "where's miaow?",
-  'miaow is missing', 'miaow is missing?', 'miaow missing', 'miaow missing?',
+// "Where is Miaow?" / "Miaow is missing?" – reply with Emperor role ping + random image (base phrases + ? ! !? variants)
+const MIAOW_WHERE_BASES = [
+  'where is miaow', "where's miaow", 'miaow is missing', 'miaow missing',
   'where did miaow', 'where has miaow', 'wheres miaow', 'where miaow',
   'is miaow missing', 'is miaow here', 'miaow where', 'anyone seen miaow',
   'where did miaow go', 'miaow gone', 'what happened to miaow',
+];
+const MIAOW_WHERE_PHRASES = [
+  ...MIAOW_WHERE_BASES,
+  ...MIAOW_WHERE_BASES.map(b => b + '?'),
+  ...MIAOW_WHERE_BASES.map(b => b + '!'),
+  ...MIAOW_WHERE_BASES.map(b => b + '!?'),
 ].map(p => p.toLowerCase());
 function hasMiaowWhereTrigger(text) {
   if (!text || typeof text !== 'string') return false;
