@@ -116,6 +116,15 @@ function buildSoonTriggerPhrases() {
     'how soon until', 'how long until', 'how long until we can play', 'how long until servers', 'how long until game',
     'how much longer until', 'should be soon', 'supposed to be soon', 'was supposed to open',
     'was supposed to be up', 'should be up', 'should be open', 'should be live', 'must be soon',
+    // How to join / Steam / access – "how do I join", "Steam not letting me", "can't get in"
+    'how to join', 'how do i join', 'how can i join', 'how do we join', 'how can we join',
+    'tell me how to join', 'anyone know how to join', 'how to get in', 'how do i get in', 'how can i get in',
+    'join the game', 'cant join', "can't join", 'cannot join', 'cant get in', "can't get in", 'cannot get in',
+    'steam not letting', 'steam not letting me', 'steam wont let', "steam won't let", 'steam is not letting',
+    'go to steam', 'go tho steam', 'tried to go to steam', 'through steam', 'via steam',
+    'it not letting me', 'its not letting me', "it's not letting me", 'not letting me', 'wont let me', "won't let me",
+    'steam not working', 'steam doesnt work', "steam doesn't work", 'cant get in the game', "can't get in the game",
+    'how to play', 'how do i play', 'how can i play', 'where do i download', 'where to download', 'how to download',
   ].forEach(add);
 
   return [...phrases];
@@ -157,6 +166,15 @@ const SOON_IMAGE_PHRASES = [
   'how soon until', 'how long until', 'how long until we can play', 'how long until servers', 'how long until game',
   'how much longer until', 'should be soon', 'supposed to be soon', 'was supposed to open',
   'was supposed to be up', 'should be up', 'should be open', 'should be live', 'must be soon',
+  // How to join / Steam / access – also get Soon meme image
+  'how to join', 'how do i join', 'how can i join', 'how do we join', 'how can we join',
+  'tell me how to join', 'anyone know how to join', 'how to get in', 'how do i get in', 'how can i get in',
+  'cant join', "can't join", 'cannot join', 'cant get in', "can't get in", 'cannot get in',
+  'steam not letting', 'steam not letting me', 'steam wont let', "steam won't let", 'steam is not letting',
+  'go to steam', 'go tho steam', 'tried to go to steam', 'through steam', 'via steam',
+  'it not letting me', 'its not letting me', "it's not letting me", 'not letting me', 'wont let me', "won't let me",
+  'steam not working', 'steam doesnt work', "steam doesn't work", 'cant get in the game', "can't get in the game",
+  'how to play', 'how do i play', 'how can i play', 'where do i download', 'where to download', 'how to download',
 ];
 function hasSoonTriggerWithImage(text) {
   if (!text || typeof text !== 'string') return false;
