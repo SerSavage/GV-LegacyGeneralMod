@@ -469,6 +469,8 @@ const RELIGION_POLITICS_PHRASES = [
   'current events in middle east', 'current events occurring', 'events in the middle east', 'events in middle east',
   'what do you think about religion', 'thoughts on religion', 'questions about religion', 'opinions on religion',
   'what about religion', 'discuss religion', 'religion and politics', 'politics and religion',
+  // Single-word ideological (nazi/fascist etc.) – trigger even when only one word in message (no 80% ratio needed)
+  'nazi', 'nazis', 'nazism', 'neo-nazi', 'fascist', 'fascism',
 ].map(p => p.toLowerCase());
 function messageContainsReligionPoliticsPhrase(text) {
   if (!text || typeof text !== 'string') return false;
