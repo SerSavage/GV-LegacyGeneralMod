@@ -68,6 +68,8 @@ const SOON_MEME_PATHS = [
   path.join(process.cwd(), 'assets', 'memes', 'file_000000001b3471fbbf4e0eb00f4c1467.png'),
   path.join(process.cwd(), 'assets', 'memes', 'file_000000003ff87246a4a7611f400bbdd8.png'),
   path.join(process.cwd(), 'assets', 'memes', 'file_000000006138720aa48dcc9d3d67b177.png'),
+  path.join(process.cwd(), 'assets', 'memes', 'soon_rdt.jpg'),
+  path.join(process.cwd(), 'assets', 'memes', 'letmein.jpg'),
 ];
 function getRandomSoonMeme() {
   const existing = SOON_MEME_PATHS.filter(p => fs.existsSync(p));
