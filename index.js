@@ -493,6 +493,8 @@ const RELIGION_POLITICS_PHRASES = [
   'nazi', 'nazis', 'nazism', 'neo-nazi', 'fascist', 'fascism',
   // Real-world genocide / AI harm (not in-game "kill a nation") – redirect to off-topic
   'genocide plan', 'genocide',
+  // Directed threats / "wage war against you" – redirect to off-topic (in-game "wage war" often has siege/guild/nations = safe-context)
+  'wage war against you', 'wage war against',
 ].map(p => p.toLowerCase());
 function messageContainsReligionPoliticsPhrase(text) {
   if (!text || typeof text !== 'string') return false;
