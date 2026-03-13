@@ -464,6 +464,11 @@ const RELIGION_POLITICS_PHRASES = [
   'go to church', 'go to the church', 'become a christ', 'motherfucking christ', 'holy motherfucking',
   'pakistan iran', 'iran israel', 'pakistan israel', 'are states', 'israel are', 'iran are', 'pakistan are',
   'killing muslims', 'killing jews', 'kill muslims', 'kill jews', 'killing christians', 'muslims is based', 'jews is based',
+  // Geopolitical / middle east / current events – redirect to off-topic
+  'middle east', 'middleeast', 'geopolitical', 'geopolitical climate', 'current events', 'current events in the middle east',
+  'current events in middle east', 'current events occurring', 'events in the middle east', 'events in middle east',
+  'what do you think about religion', 'thoughts on religion', 'questions about religion', 'opinions on religion',
+  'what about religion', 'discuss religion', 'religion and politics', 'politics and religion',
 ].map(p => p.toLowerCase());
 function messageContainsReligionPoliticsPhrase(text) {
   if (!text || typeof text !== 'string') return false;
