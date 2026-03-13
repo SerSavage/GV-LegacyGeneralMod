@@ -518,8 +518,11 @@ function tokenizeWords(text) {
     .filter(w => w.length > 0);
 }
 
+// Never count these as religion/politics trigger words (common words that may appear in words.txt)
+const TRIGGER_WORD_IGNORE = new Set(['good', 'goods'].map(w => w.toLowerCase()));
 function wordMatchesTriggerWord(word) {
   if (!word) return false;
+  if (TRIGGER_WORD_IGNORE.has(word.toLowerCase())) return false;
   if (isPoliticalOrReligionTerm(word)) return true;
   const normalized = normalizeForMatch(word);
   for (const tw of triggerWords) {
