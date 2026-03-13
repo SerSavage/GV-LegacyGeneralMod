@@ -33,9 +33,14 @@ const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bR
 const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
-// Emperor Miaow: when someone asks where Miaow is, reply with role ping + image
+// Emperor Miaow: when someone asks where Miaow is, reply with role ping + random image
 const EMPEROR_MIAOW_ROLE_ID = process.env.EMPEROR_MIAOW_ROLE_ID || '1279896690517737515'; // Emperor of Miðland
-const MIAOW_MIA_IMAGE_PATH = path.join(process.cwd(), 'EmperorMiaow', 'MiaowMIA.png');
+const EMPEROR_MIAOW_DIR = path.join(process.cwd(), 'EmperorMiaow');
+const MIAOW_IMAGE_NAMES = ['MiaowMIA.png', 'miaow_1.png', 'miaow_2.png', 'miaow_3.png', 'miaow_4.png', 'miaow_5.png', 'miaow_6.png', 'miaow_7.png', 'miaow_8.png', 'miaow_9.png'];
+function getRandomMiaowImage() {
+  const existing = MIAOW_IMAGE_NAMES.map(name => path.join(EMPEROR_MIAOW_DIR, name)).filter(p => fs.existsSync(p));
+  return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
+}
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
 // Welcome videos when user joins or gets their role — one is picked at random (add more via env NEW_ARRIVAL_VIDEO_URLS comma-separated, or use defaults)
@@ -910,13 +915,14 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + MiaowMIA image
+  // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + random Miaow image
   if (hasMiaowWhereTrigger(message.content)) {
     try {
       const roleMention = `<@&${EMPEROR_MIAOW_ROLE_ID}>`;
       const payload = { content: roleMention };
-      if (fs.existsSync(MIAOW_MIA_IMAGE_PATH)) {
-        payload.files = [{ attachment: MIAOW_MIA_IMAGE_PATH, name: 'MiaowMIA.png' }];
+      const miaowImagePath = getRandomMiaowImage();
+      if (miaowImagePath) {
+        payload.files = [{ attachment: miaowImagePath, name: path.basename(miaowImagePath) }];
       }
       await message.reply(payload);
       if (DEBUG) console.log('[miaow] Replied with Emperor role ping + image');
