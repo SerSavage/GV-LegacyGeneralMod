@@ -33,6 +33,9 @@ const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bR
 const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
+// Emperor Miaow: when someone asks where Miaow is, reply with role ping + image
+const EMPEROR_MIAOW_ROLE_ID = process.env.EMPEROR_MIAOW_ROLE_ID || '1279896690517737515'; // Emperor of Miðland
+const MIAOW_MIA_IMAGE_PATH = path.join(process.cwd(), 'EmperorMiaow', 'MiaowMIA.png');
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
 // Welcome videos when user joins or gets their role — one is picked at random (add more via env NEW_ARRIVAL_VIDEO_URLS comma-separated, or use defaults)
@@ -572,6 +575,21 @@ function hasSoonTrigger(text) {
   });
 }
 
+// "Where is Miaow?" / "Miaow is missing?" – reply with Emperor role ping + MiaowMIA image
+const MIAOW_WHERE_PHRASES = [
+  'where is miaow', "where's miaow", 'where is miaow?', "where's miaow?",
+  'miaow is missing', 'miaow is missing?', 'miaow missing', 'miaow missing?',
+  'where did miaow', 'where has miaow', 'wheres miaow', 'where miaow',
+  'is miaow missing', 'is miaow here', 'miaow where', 'anyone seen miaow',
+  'where did miaow go', 'miaow gone', 'what happened to miaow',
+].map(p => p.toLowerCase());
+function hasMiaowWhereTrigger(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase().trim();
+  if (!lower.includes('miaow')) return false;
+  return MIAOW_WHERE_PHRASES.some(phrase => lower.includes(phrase));
+}
+
 // Get video attachment or URL for spam reply (returns { files } or { content } for message.reply)
 function getSpamVideoPayload() {
   if (VIDEO_URL) return { content: VIDEO_URL };
@@ -889,6 +907,22 @@ client.on('messageCreate', async (message) => {
 
   if (!message.content) {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
+    return;
+  }
+
+  // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + MiaowMIA image
+  if (hasMiaowWhereTrigger(message.content)) {
+    try {
+      const roleMention = `<@&${EMPEROR_MIAOW_ROLE_ID}>`;
+      const payload = { content: roleMention };
+      if (fs.existsSync(MIAOW_MIA_IMAGE_PATH)) {
+        payload.files = [{ attachment: MIAOW_MIA_IMAGE_PATH, name: 'MiaowMIA.png' }];
+      }
+      await message.reply(payload);
+      if (DEBUG) console.log('[miaow] Replied with Emperor role ping + image');
+    } catch (err) {
+      console.error('Miaow reply failed:', err.message);
+    }
     return;
   }
 
