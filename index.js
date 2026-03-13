@@ -208,6 +208,7 @@ const SAFE_CONTEXT_BASE = [
   'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
   'geliand', 'hillead', 'infidels', 'island', 'fashion', 'chests', 'titles', 'interfaces', 'map',
   'log in', 'login', 'log in.', 'can\'t log in', 'cant log in', // game/server – avoid triggering on "I can't log in"
+  'in-game', 'ingame', // "genocide a nation in-game" = game talk, don't trigger
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
@@ -471,6 +472,8 @@ const RELIGION_POLITICS_PHRASES = [
   'what about religion', 'discuss religion', 'religion and politics', 'politics and religion',
   // Single-word ideological (nazi/fascist etc.) – trigger even when only one word in message (no 80% ratio needed)
   'nazi', 'nazis', 'nazism', 'neo-nazi', 'fascist', 'fascism',
+  // Real-world genocide / AI harm (not in-game "kill a nation") – redirect to off-topic
+  'genocide plan', 'genocide',
 ].map(p => p.toLowerCase());
 function messageContainsReligionPoliticsPhrase(text) {
   if (!text || typeof text !== 'string') return false;
