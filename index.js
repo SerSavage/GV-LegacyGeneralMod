@@ -28,7 +28,7 @@ const VIDEO_CONTENT_TYPES = /^video\//;
 const FORWARDED_MEDIA_DIR = process.env.FORWARDED_MEDIA_DIR || path.join(process.cwd(), 'assets', 'memes');
 const FORWARDED_MEDIA_EXTENSIONS = /\.(jpe?g|png|gif|webp|mp4|webm|mov|mp3|wav|m4a|ogg)$/i;
 // RSS feed → Discord announcement channel (e.g. Gloria Victis news). If the site has no RSS, use a converter like https://rss.app/ with the news page URL.
-const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1166742322738905178';
+const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1482341063674036284';
 const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bRtM0TKZJF.xml'; // Gloria Victis | gamigo news (override with env if needed)
 const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
@@ -78,6 +78,7 @@ const SOON_MEME_PATHS = [
   path.join(process.cwd(), 'assets', 'memes', 'file_000000006138720aa48dcc9d3d67b177.png'),
   path.join(process.cwd(), 'assets', 'memes', 'soon_rdt.jpg'),
   path.join(process.cwd(), 'assets', 'memes', 'letmein.jpg'),
+  path.join(process.cwd(), 'assets', 'memes', 'IMG_5346.png'),
 ];
 function getRandomSoonMeme() {
   const existing = SOON_MEME_PATHS.filter(p => fs.existsSync(p));
