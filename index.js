@@ -676,6 +676,27 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
   }
 }
 
+// Welcome ONCE ever per UserID (persisted) — no second welcome on rejoin, role change, or role remove/re-add
+const WELCOME_ONCE_EVER_FILE = path.join(process.cwd(), 'welcome-once-ever.json');
+function loadWelcomeOnceEver() {
+  try {
+    if (fs.existsSync(WELCOME_ONCE_EVER_FILE)) {
+      const data = JSON.parse(fs.readFileSync(WELCOME_ONCE_EVER_FILE, 'utf8'));
+      return new Set(Array.isArray(data) ? data : []);
+    }
+  } catch (e) {
+    console.warn('Welcome-once-ever load failed:', e.message);
+  }
+  return new Set();
+}
+function saveWelcomeOnceEver(set) {
+  try {
+    fs.writeFileSync(WELCOME_ONCE_EVER_FILE, JSON.stringify([...set], null, 0), 'utf8');
+  } catch (e) {
+    console.error('Welcome-once-ever save failed:', e.message);
+  }
+}
+const welcomedOnceEver = loadWelcomeOnceEver();
 // Track users we've already welcomed for picking a nation role (first-time only)
 const welcomedForNationRoleByUser = new Set();
 // User IDs we've already welcomed via guildMemberAdd (clear on leave so we re-welcome if they rejoin)
@@ -684,6 +705,8 @@ const welcomedUserIds = new Set();
 let botReadyAt = 0;
 function recordAdminWelcome(userId) {
   welcomedUserIds.add(userId);
+  welcomedOnceEver.add(userId);
+  saveWelcomeOnceEver(welcomedOnceEver);
 }
 
 // Slur reply tracking: first offense = GIF, repeated/spam = video. Entries reset after SLUR_TRACK_TTL_MS.
@@ -809,9 +832,10 @@ client.once('clientReady', () => {
 });
 
 // When a user joins the server, post the welcome video in gv-general only (skip if already welcomed on role to avoid double message)
-// Skip welcome for very new accounts (bot/alt filter) — set WELCOME_MIN_ACCOUNT_AGE_DAYS (default 7; use 730 for 2 years)
+// Welcome each UserID only ONCE ever (persisted); skip very new accounts (bot/alt filter)
 client.on('guildMemberAdd', async (member) => {
-  if (welcomedUserIds.has(member.user.id)) return; // already welcomed on role – don't welcome again
+  if (welcomedOnceEver.has(member.user.id)) return; // already welcomed once ever – never again
+  if (welcomedUserIds.has(member.user.id)) return; // already welcomed on role this session – don't welcome again
   if (!shouldWelcomeAccountAge(member.user)) {
     if (DEBUG) console.log(`[new-arrival] Skipped welcome for ${member.user.tag} (account too new, < ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days)`);
     return;
@@ -830,7 +854,7 @@ client.on('guildMemberAdd', async (member) => {
   }
 });
 
-// When a user leaves, allow re-welcome if they rejoin
+// When a user leaves, clear in-memory session state only (welcomedOnceEver is persisted – we still never welcome them again)
 client.on('guildMemberRemove', (member) => {
   welcomedUserIds.delete(member.id);
 });
@@ -843,8 +867,9 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (!pickedNationRole) return;
 
   const userId = newMember.user.id;
+  if (welcomedOnceEver.has(userId)) return; // already welcomed once ever – never again
   if (welcomedUserIds.has(userId)) return; // already welcomed on guildMemberAdd – don't welcome again (no double message)
-  if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role (e.g. switching to another)
+  if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role this session (e.g. switching to another)
   if (!shouldWelcomeAccountAge(newMember.user)) return; // skip very new accounts (bot/alt filter)
 
   const joinedAt = newMember.joinedAt ? newMember.joinedAt.getTime() : 0;
