@@ -41,6 +41,14 @@ function getRandomMiaowImage() {
   const existing = MIAOW_IMAGE_NAMES.map(name => path.join(EMPEROR_MIAOW_DIR, name)).filter(p => fs.existsSync(p));
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
 }
+// Don't welcome users whose Discord account is too new (bot/alt filter). Set WELCOME_MIN_ACCOUNT_AGE_DAYS (e.g. 7 or 730 for 2 years).
+const WELCOME_MIN_ACCOUNT_AGE_DAYS = Math.max(0, parseInt(process.env.WELCOME_MIN_ACCOUNT_AGE_DAYS, 10) || 7);
+const WELCOME_MIN_ACCOUNT_AGE_MS = WELCOME_MIN_ACCOUNT_AGE_DAYS * 24 * 60 * 60 * 1000;
+function shouldWelcomeAccountAge(user) {
+  if (!user?.createdAt) return true; // no timestamp → allow
+  const ageMs = Date.now() - new Date(user.createdAt).getTime();
+  return ageMs >= WELCOME_MIN_ACCOUNT_AGE_MS;
+}
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
 // Welcome videos when user joins or gets their role — one is picked at random (add more via env NEW_ARRIVAL_VIDEO_URLS comma-separated, or use defaults)
@@ -743,6 +751,7 @@ client.once('clientReady', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Welcomes only from guildMemberAdd (+ first role); admin channel ignored for welcome`);
+  console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
 
   // RSS feed → announcement channel: Gloria Victis news only, from today forward (no old items)
   if (RSS_FEED_URL && ANNOUNCEMENT_CHANNEL_ID) {
@@ -800,8 +809,13 @@ client.once('clientReady', () => {
 });
 
 // When a user joins the server, post the welcome video in gv-general only (skip if already welcomed on role to avoid double message)
+// Skip welcome for very new accounts (bot/alt filter) — set WELCOME_MIN_ACCOUNT_AGE_DAYS (default 7; use 730 for 2 years)
 client.on('guildMemberAdd', async (member) => {
   if (welcomedUserIds.has(member.user.id)) return; // already welcomed on role – don't welcome again
+  if (!shouldWelcomeAccountAge(member.user)) {
+    if (DEBUG) console.log(`[new-arrival] Skipped welcome for ${member.user.tag} (account too new, < ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days)`);
+    return;
+  }
   try {
     const channel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
     if (channel && channel.isTextBased()) {
@@ -831,6 +845,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   const userId = newMember.user.id;
   if (welcomedUserIds.has(userId)) return; // already welcomed on guildMemberAdd – don't welcome again (no double message)
   if (welcomedForNationRoleByUser.has(userId)) return; // already welcomed for a nation role (e.g. switching to another)
+  if (!shouldWelcomeAccountAge(newMember.user)) return; // skip very new accounts (bot/alt filter)
 
   const joinedAt = newMember.joinedAt ? newMember.joinedAt.getTime() : 0;
   if (joinedAt === 0 || joinedAt < botReadyAt) return; // only welcome if they joined after bot became active (no older users)
