@@ -421,7 +421,7 @@ function hasSpamSlur(text) {
 }
 
 // Exception: "mad men" / "lunatics" in idiom/quote context (e.g. "nation filled with mad men and lunatics") — don't trigger off-topic
-const OFF_TOPIC_SAFE_PHRASES = ['mad men', 'mad man', 'lunatics', 'lunatic'];
+const OFF_TOPIC_SAFE_PHRASES = ['mad men', 'mad man', 'lunatics', 'lunatic', 'gamigo', 'trove'];
 
 // Check if message contains any off-topic phrase (case-insensitive substring)
 function hasOffTopicPhrase(text) {
