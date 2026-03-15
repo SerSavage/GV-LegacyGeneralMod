@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 10000;
 // --- Channel IDs ---
 // Trigger channel = gv-general (bot listens here for slurs, off-topic, religion/politics, Soon).
 const TRIGGER_CHANNEL_ID = String(process.env.TRIGGER_CHANNEL_ID || '1166738417539887218');
-const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // channel to post new-arrival video
+const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // trigger channel (slurs, Soon, etc.) and Chronicus meme target
 // Admin-only channel: we skip gv-general triggers for messages here; welcomes are only from guildMemberAdd (not from Carl-bot log)
 const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
@@ -32,7 +32,7 @@ const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '14823410
 const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bRtM0TKZJF.xml'; // Gloria Victis | gamigo news (override with env if needed)
 const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
-const NEW_ARRIVALS_CHANNEL_ID = process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'; // notify when user gets a role
+const NEW_ARRIVALS_CHANNEL_ID = String(process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'); // #new-arrivals: welcome video + user tag (join or first role)
 // Emperor Miaow: when someone asks where Miaow is, reply with role ping + random image
 const EMPEROR_MIAOW_ROLE_ID = process.env.EMPEROR_MIAOW_ROLE_ID || '1279896690517737515'; // Emperor of Miðland
 const EMPEROR_MIAOW_DIR = path.join(process.cwd(), 'EmperorMiaow');
@@ -220,7 +220,7 @@ const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 // • Off-topic phrases   → OFF_TOPIC_GIF (Mace Windu only)
 // • Religion/politics  → random TENOR_GIF
 // • Soon (Gæm?, ETA?)  → SOON_EMOJI reaction only (no delete/forward)
-// • New member welcome → random from NEW_ARRIVAL_VIDEO_URLS (e.g. streamable.com/vxi8bu, streamable.com/63lazw) in gv-general, user mentioned by ID
+// • New member welcome → random from NEW_ARRIVAL_VIDEO_URLS in #new-arrivals (channel NEW_ARRIVALS_CHANNEL_ID), user mentioned by ID
 
 // Safe-context terms: if message contains any of these (game/community/lore), we do NOT trigger religion/politics filter.
 // Built from in-code list + Gloria Victis Wiki (https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki) + optional safe-context.txt
@@ -539,8 +539,8 @@ function tokenizeWords(text) {
     .filter(w => w.length > 0);
 }
 
-// Never count these as religion/politics trigger words (common words that may appear in words.txt)
-const TRIGGER_WORD_IGNORE = new Set(['good', 'goods'].map(w => w.toLowerCase()));
+// Never count these as religion/politics trigger words (common words / game terms that match leaders or lists by substring)
+const TRIGGER_WORD_IGNORE = new Set(['good', 'goods', 'mod', 'mods'].map(w => w.toLowerCase())); // "mod" matches leader "modi"; "Mod" = game mod
 function wordMatchesTriggerWord(word) {
   if (!word) return false;
   if (TRIGGER_WORD_IGNORE.has(word.toLowerCase())) return false;
@@ -774,7 +774,7 @@ client.once('clientReady', () => {
   botReadyAt = Date.now();
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
-  console.log(`Welcomes only from guildMemberAdd (+ first role); admin channel ignored for welcome`);
+  console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
   console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
 
   // RSS feed → announcement channel: Gloria Victis news only, from today forward (no old items)
@@ -832,7 +832,7 @@ client.once('clientReady', () => {
   }
 });
 
-// When a user joins the server, post the welcome video in gv-general only (skip if already welcomed on role to avoid double message)
+// When a user joins the server, post the welcome video + user tag in #new-arrivals (skip if already welcomed on role to avoid double message)
 // Welcome each UserID only ONCE ever (persisted); skip very new accounts (bot/alt filter)
 client.on('guildMemberAdd', async (member) => {
   if (welcomedOnceEver.has(member.user.id)) return; // already welcomed once ever – never again
@@ -842,13 +842,13 @@ client.on('guildMemberAdd', async (member) => {
     return;
   }
   try {
-    const channel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
+    const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (channel && channel.isTextBased()) {
       await channel.send({
         content: `Welcome, ${member.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
       });
       recordAdminWelcome(member.user.id);
-      if (DEBUG) console.log(`[new-arrival] Posted welcome video for ${member.user.tag} in gv-general`);
+      if (DEBUG) console.log(`[new-arrival] Posted welcome video for ${member.user.tag} in #new-arrivals`);
     }
   } catch (err) {
     console.error('New-arrival video post failed:', err);
@@ -860,7 +860,7 @@ client.on('guildMemberRemove', (member) => {
   welcomedUserIds.delete(member.id);
 });
 
-// When a new user picks one of the nation roles (or is given a role) for the first time: welcome in gv-general only (no new-arrivals). Skip if already welcomed on join to avoid double message.
+// When a new user picks one of the nation roles (or is given a role) for the first time: welcome in #new-arrivals (same as join). Skip if already welcomed on join to avoid double message.
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (newMember.roles.cache.size <= oldMember.roles.cache.size) return; // no role added
   const addedRoleIds = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
@@ -878,13 +878,13 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 
   welcomedForNationRoleByUser.add(userId);
   try {
-    const generalChannel = await client.channels.fetch(GV_GENERAL_CHANNEL_ID);
-    if (generalChannel?.isTextBased()) {
-      await generalChannel.send({
+    const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
+    if (channel?.isTextBased()) {
+      await channel.send({
         content: `Welcome, ${newMember.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
       });
       recordAdminWelcome(userId); // count as welcomed so we don't also post on join if events are reordered
-      if (DEBUG) console.log(`[role-assign] Welcome posted in gv-general for ${newMember.user.tag}`);
+      if (DEBUG) console.log(`[role-assign] Welcome posted in #new-arrivals for ${newMember.user.tag}`);
     }
   } catch (err) {
     console.error('Role-assign welcome failed:', err);
