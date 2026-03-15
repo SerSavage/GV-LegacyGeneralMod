@@ -33,6 +33,9 @@ const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bR
 const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = String(process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'); // #new-arrivals: welcome video + user tag (join or first role)
+// Channel IDs for welcome message links (Welcome + server-roles). Override with env if needed.
+const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || '1166746745582125096';   // #Welcome
+const SERVER_ROLES_CHANNEL_ID = process.env.SERVER_ROLES_CHANNEL_ID || '1252706362899562647'; // #server-roles
 // Emperor Miaow: when someone asks where Miaow is, reply with role ping + random image
 const EMPEROR_MIAOW_ROLE_ID = process.env.EMPEROR_MIAOW_ROLE_ID || '1279896690517737515'; // Emperor of Miðland
 const EMPEROR_MIAOW_DIR = path.join(process.cwd(), 'EmperorMiaow');
@@ -58,6 +61,10 @@ const NEW_ARRIVAL_VIDEO_URLS = (process.env.NEW_ARRIVAL_VIDEO_URLS || process.en
   .filter(Boolean);
 function getRandomWelcomeVideoUrl() {
   return NEW_ARRIVAL_VIDEO_URLS[Math.floor(Math.random() * NEW_ARRIVAL_VIDEO_URLS.length)] || 'https://streamable.com/vxi8bu';
+}
+function getWelcomeMessageContent(userMention) {
+  const videoUrl = getRandomWelcomeVideoUrl();
+  return `Welcome, ${userMention}!\n${videoUrl}\n\nCheck out **Welcome** <#${WELCOME_CHANNEL_ID}> and **server-roles** <#${SERVER_ROLES_CHANNEL_ID}> to pick roles.`;
 }
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
 // Images for "Chronicus Generalium" reply in gv-general when user is moved to off-topic — one picked at random (not used for Soon)
@@ -844,14 +851,14 @@ client.on('guildMemberAdd', async (member) => {
   try {
     const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (channel && channel.isTextBased()) {
-      await channel.send({
-        content: `Welcome, ${member.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
-      });
+      await channel.send({ content: getWelcomeMessageContent(member.user.toString()) });
       recordAdminWelcome(member.user.id);
-      if (DEBUG) console.log(`[new-arrival] Posted welcome video for ${member.user.tag} in #new-arrivals`);
+      if (DEBUG) console.log(`[new-arrival] Posted welcome for ${member.user.tag} in #new-arrivals`);
+    } else {
+      if (DEBUG) console.log(`[new-arrival] Channel ${NEW_ARRIVALS_CHANNEL_ID} not found or not text-based`);
     }
   } catch (err) {
-    console.error('New-arrival video post failed:', err);
+    console.error('New-arrival welcome post failed:', err.message || err);
   }
 });
 
@@ -874,20 +881,23 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (!shouldWelcomeAccountAge(newMember.user)) return; // skip very new accounts (bot/alt filter)
 
   const joinedAt = newMember.joinedAt ? newMember.joinedAt.getTime() : 0;
-  if (joinedAt === 0 || joinedAt < botReadyAt) return; // only welcome if they joined after bot became active (no older users)
+  if (joinedAt === 0) return;
+  // Only welcome if they joined after bot became active, OR joined within last 24h (catches join right before bot restart)
+  const joinedWithin24h = Date.now() - joinedAt <= 24 * 60 * 60 * 1000;
+  if (joinedAt < botReadyAt && !joinedWithin24h) return; // old member who just picked a role – skip
 
   welcomedForNationRoleByUser.add(userId);
   try {
     const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (channel?.isTextBased()) {
-      await channel.send({
-        content: `Welcome, ${newMember.user.toString()}!\n${getRandomWelcomeVideoUrl()}`,
-      });
+      await channel.send({ content: getWelcomeMessageContent(newMember.user.toString()) });
       recordAdminWelcome(userId); // count as welcomed so we don't also post on join if events are reordered
       if (DEBUG) console.log(`[role-assign] Welcome posted in #new-arrivals for ${newMember.user.tag}`);
+    } else {
+      if (DEBUG) console.log(`[role-assign] Channel ${NEW_ARRIVALS_CHANNEL_ID} not found or not text-based`);
     }
   } catch (err) {
-    console.error('Role-assign welcome failed:', err);
+    console.error('Role-assign welcome failed:', err.message || err);
     welcomedForNationRoleByUser.delete(userId); // allow retry
   }
 });
