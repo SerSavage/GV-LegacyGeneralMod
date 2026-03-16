@@ -447,6 +447,17 @@ function hasGoyTerm(text) {
   return GOY_TERMS.some(term => lower.includes(term));
 }
 
+// Tenor GIF IDs that are allowed in gv-general even if the URL slug contains trigger words (e.g. trump-kittens = cats, not politics)
+const SAFE_TENOR_GIF_IDS = new Set(['5449274500905931814']); // trump-kittens us-army special-ops (kittens/cats content)
+function messageContainsSafeTenorLink(content) {
+  if (!content || typeof content !== 'string') return false;
+  if (!content.includes('tenor.com')) return false;
+  for (const id of SAFE_TENOR_GIF_IDS) {
+    if (content.includes(id)) return true;
+  }
+  return false;
+}
+
 // Political countries and leaders – count as trigger words for religion/politics filter (e.g. "Pakistan Iran Israel are states")
 const POLITICAL_COUNTRIES = new Set([
   'pakistan', 'iran', 'israel', 'india', 'china', 'russia', 'usa', 'ukraine', 'taiwan', 'gaza', 'palestine',
@@ -1043,6 +1054,10 @@ client.on('messageCreate', async (message) => {
   if (hasSafeContext(message.content)) {
     if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
     return; // game/community context – don't trigger
+  }
+  if (messageContainsSafeTenorLink(message.content)) {
+    if (DEBUG) console.log('[skip] message contains safe tenor GIF (e.g. kittens)');
+    return; // whitelisted tenor link – don't trigger religion/politics
   }
 
   // Religion/politics/goy: trigger if ≥80% filter words OR ideological phrases OR obvious religion/politics phrases
