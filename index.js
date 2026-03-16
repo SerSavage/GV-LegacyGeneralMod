@@ -36,8 +36,9 @@ const NEW_ARRIVALS_CHANNEL_ID = String(process.env.NEW_ARRIVALS_CHANNEL_ID || '1
 // Channel IDs for welcome message links (Welcome + server-roles). Override with env if needed.
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || '1166746745582125096';   // #Welcome
 const SERVER_ROLES_CHANNEL_ID = process.env.SERVER_ROLES_CHANNEL_ID || '1252706362899562647'; // #server-roles
-// Emperor Miaow: when someone asks where Miaow is, reply with role ping + random image
-const EMPEROR_MIAOW_ROLE_ID = process.env.EMPEROR_MIAOW_ROLE_ID || '1279896690517737515'; // Emperor of Miðland
+// Emperor Miaow: when someone asks where Miaow is, reply with role ping + random image. Only triggered when the message author has Miðland role.
+const EMPEROR_MIAOW_ROLE_ID = process.env.EMPEROR_MIAOW_ROLE_ID || '1279896690517737515'; // Emperor of Miðland (pinged in reply)
+const MIAOW_TRIGGER_ROLE_ID = process.env.MIAOW_TRIGGER_ROLE_ID || '1167525339103248384'; // Miðland – only this role can trigger the "Where is Miaow?" reply
 const EMPEROR_MIAOW_DIR = path.join(process.cwd(), 'EmperorMiaow');
 const MIAOW_IMAGE_NAMES = ['MiaowMIA.png', 'miaow_1.png', 'miaow_2.png', 'miaow_3.png', 'miaow_4.png', 'miaow_5.png', 'miaow_6.png', 'miaow_7.png', 'miaow_8.png', 'miaow_9.png'];
 function getRandomMiaowImage() {
@@ -995,19 +996,24 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + random Miaow image
+  // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + random Miaow image (only when author has Miðland role)
   if (hasMiaowWhereTrigger(message.content)) {
-    try {
-      const roleMention = `<@&${EMPEROR_MIAOW_ROLE_ID}>`;
-      const payload = { content: roleMention };
-      const miaowImagePath = getRandomMiaowImage();
-      if (miaowImagePath) {
-        payload.files = [{ attachment: miaowImagePath, name: path.basename(miaowImagePath) }];
+    const hasTriggerRole = message.member?.roles?.cache?.has(MIAOW_TRIGGER_ROLE_ID);
+    if (hasTriggerRole) {
+      try {
+        const roleMention = `<@&${EMPEROR_MIAOW_ROLE_ID}>`;
+        const payload = { content: roleMention };
+        const miaowImagePath = getRandomMiaowImage();
+        if (miaowImagePath) {
+          payload.files = [{ attachment: miaowImagePath, name: path.basename(miaowImagePath) }];
+        }
+        await message.reply(payload);
+        if (DEBUG) console.log('[miaow] Replied with Emperor role ping + image');
+      } catch (err) {
+        console.error('Miaow reply failed:', err.message);
       }
-      await message.reply(payload);
-      if (DEBUG) console.log('[miaow] Replied with Emperor role ping + image');
-    } catch (err) {
-      console.error('Miaow reply failed:', err.message);
+    } else if (DEBUG) {
+      console.log('[miaow] Skipped – author does not have Miðland role');
     }
     return;
   }
