@@ -257,6 +257,8 @@ const SAFE_CONTEXT_BASE = [
   'in-game', 'ingame', // "genocide a nation in-game" = game talk, don't trigger
   // Ping, matchmaking, game balance – allow in gv-general (e.g. "match between ping 30 and 110", "remove the marker", "unplayable")
   'ping', 'marker', 'unplayable', 'match', 'matchmaking', 'latency', 'ms',
+  // In-game PvP / character combat – not IRL violence (e.g. "Meow Army", "it's going to be a bloodbath" = in-game)
+  'bloodbath', 'meow army',
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
