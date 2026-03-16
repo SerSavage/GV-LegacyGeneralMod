@@ -254,6 +254,8 @@ const SAFE_CONTEXT_BASE = [
   'geliand', 'hillead', 'infidels', 'island', 'fashion', 'chests', 'titles', 'interfaces', 'map',
   'log in', 'login', 'log in.', 'can\'t log in', 'cant log in', // game/server – avoid triggering on "I can't log in"
   'in-game', 'ingame', // "genocide a nation in-game" = game talk, don't trigger
+  // Ping, matchmaking, game balance – allow in gv-general (e.g. "match between ping 30 and 110", "remove the marker", "unplayable")
+  'ping', 'marker', 'unplayable', 'match', 'matchmaking', 'latency', 'ms',
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
