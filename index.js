@@ -618,13 +618,13 @@ function hasMiaowWhereTrigger(text) {
   return MIAOW_WHERE_PHRASES.some(phrase => lower.includes(phrase));
 }
 
-// Get video attachment or URL for spam reply (returns { files } or { content } for message.reply)
+// Get video attachment or URL for spam reply (returns { files } or { content } for message.reply). Prefer local file when present so Discord embeds inline.
 function getSpamVideoPayload() {
-  if (VIDEO_URL) return { content: VIDEO_URL };
   const path = VIDEO_PATH;
   if (path && fs.existsSync(path)) {
     return { files: [{ attachment: path, name: 'TMFIAR.mp4' }] };
   }
+  if (VIDEO_URL) return { content: VIDEO_URL };
   return { content: '(Video not configured: set VIDEO_PATH or VIDEO_URL, or add assets/TMFIAR.mp4)' };
 }
 
@@ -649,7 +649,8 @@ function isExcludedFromDeleteAndMeme(message) {
 }
 
 // Delete message in gv-general and forward it to #off-topic with user tag and same GIF/video response; then post Chronicus Generalium in gv-general
-async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
+// gifOrVideoPayload: string (GIF/video URL) OR { content?: string, files?: Array } so video can be sent as attachment for proper Discord embed
+async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload) {
   try {
     await message.delete();
   } catch (err) {
@@ -659,13 +660,21 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl) {
     const channel = await message.client.channels.fetch(REDIRECT_CHANNEL_ID);
     if (!channel?.isTextBased()) return;
     const movedText = message.content ? String(message.content).slice(0, 1500) : '(no text)';
-    const content = [
+    const textParts = [
       `${message.author.toString()} — moved from <#${TRIGGER_CHANNEL_ID}>:`,
       `\`\`\`${movedText}${message.content && message.content.length > 1500 ? '…' : ''}\`\`\``,
       REDIRECT_MESSAGE,
-      gifOrVideoUrl,
-    ].join('\n\n');
-    await channel.send({ content });
+    ];
+    const isPayload = gifOrVideoPayload && typeof gifOrVideoPayload === 'object' && !Array.isArray(gifOrVideoPayload);
+    if (isPayload && gifOrVideoPayload.files?.length) {
+      textParts.push(gifOrVideoPayload.content || '');
+      const content = textParts.join('\n\n').trim();
+      await channel.send({ content: content || undefined, files: gifOrVideoPayload.files });
+    } else {
+      const urlOrContent = isPayload ? (gifOrVideoPayload.content || '') : String(gifOrVideoPayload || '');
+      if (urlOrContent) textParts.push(urlOrContent);
+      await channel.send({ content: textParts.join('\n\n') });
+    }
   } catch (err) {
     console.error('Forward to off-topic failed:', err);
   }
@@ -1017,8 +1026,8 @@ client.on('messageCreate', async (message) => {
     const repeated = isRepeatedSlurOffender(userId);
     recordSlurReply(userId);
     const videoPayload = getSpamVideoPayload();
-    const gifOrVideoUrl = repeated ? (videoPayload.content || VIDEO_URL) : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-    await deleteInGeneralAndForwardToOffTopic(message, gifOrVideoUrl);
+    const gifOrVideoPayload = repeated ? videoPayload : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+    await deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload);
     return;
   }
 
