@@ -875,11 +875,11 @@ client.on('guildMemberAdd', async (member) => {
     if (DEBUG) console.log(`[new-arrival] Skipped welcome for ${member.user.tag} (account too new, < ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days)`);
     return;
   }
+  recordAdminWelcome(member.user.id); // record immediately to avoid race with guildMemberUpdate (both firing → double welcome)
   try {
     const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (channel && channel.isTextBased()) {
       await channel.send({ content: getWelcomeMessageContent(member.user.toString()) });
-      recordAdminWelcome(member.user.id);
       if (DEBUG) console.log(`[new-arrival] Posted welcome for ${member.user.tag} in #new-arrivals`);
     } else {
       if (DEBUG) console.log(`[new-arrival] Channel ${NEW_ARRIVALS_CHANNEL_ID} not found or not text-based`);
@@ -914,11 +914,11 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   if (joinedAt < botReadyAt && !joinedWithin24h) return; // old member who just picked a role – skip
 
   welcomedForNationRoleByUser.add(userId);
+  recordAdminWelcome(userId); // record immediately to avoid race with guildMemberAdd (both firing → double welcome)
   try {
     const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (channel?.isTextBased()) {
       await channel.send({ content: getWelcomeMessageContent(newMember.user.toString()) });
-      recordAdminWelcome(userId); // count as welcomed so we don't also post on join if events are reordered
       if (DEBUG) console.log(`[role-assign] Welcome posted in #new-arrivals for ${newMember.user.tag}`);
     } else {
       if (DEBUG) console.log(`[role-assign] Channel ${NEW_ARRIVALS_CHANNEL_ID} not found or not text-based`);
