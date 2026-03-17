@@ -259,6 +259,8 @@ const SAFE_CONTEXT_BASE = [
   'ping', 'marker', 'unplayable', 'match', 'matchmaking', 'latency', 'ms',
   // In-game PvP / character combat – not IRL violence (e.g. "Meow Army", "it's going to be a bloodbath" = in-game)
   'bloodbath', 'meow army',
+  // Nation choice / faction traits – game context (e.g. "Soon you'll be choosing a nation", "some are more military")
+  'choosing a nation', 'choosing a faction', 'more military', 'nation choice', 'pick a nation',
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
