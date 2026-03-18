@@ -65,9 +65,16 @@ const NEW_ARRIVAL_VIDEO_URLS = (process.env.NEW_ARRIVAL_VIDEO_URLS || process.en
   .split(',')
   .map(u => u.trim())
   .filter(Boolean);
+let lastWelcomeVideoPath = null; // avoid playing the same welcome video twice in a row
 function getRandomWelcomeVideoPath() {
   const existing = WELCOME_VIDEO_PATHS.filter(p => fs.existsSync(p));
-  return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
+  if (existing.length === 0) return null;
+  const pool = existing.length > 1 && lastWelcomeVideoPath
+    ? existing.filter(p => p !== lastWelcomeVideoPath)
+    : existing;
+  const chosen = pool[Math.floor(Math.random() * pool.length)];
+  lastWelcomeVideoPath = chosen;
+  return chosen;
 }
 function getRandomWelcomeVideoUrl() {
   return NEW_ARRIVAL_VIDEO_URLS[Math.floor(Math.random() * NEW_ARRIVAL_VIDEO_URLS.length)] || 'https://streamable.com/vxi8bu';
