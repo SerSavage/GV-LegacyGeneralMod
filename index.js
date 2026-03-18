@@ -110,6 +110,17 @@ function getRandomSoonMeme() {
   const existing = SOON_MEME_PATHS.filter(p => fs.existsSync(p));
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
 }
+// GIFs for Soon trigger (game/servers up questions) – one picked at random, Discord embeds the link
+const SOON_GIFS = [
+  'https://tenor.com/view/history-of-the-world-move-move-along-go-away-move-it-along-gif-12125287933846122147',
+  'https://tenor.com/view/get-over-it-gary-marshall-borders-sistas-s6e12-move-on-gif-1883620024651432269',
+  'https://tenor.com/view/all-right-lets-go-sgt-bull-wheatley-them-lets-move-come-on-gif-21089700',
+  'https://tenor.com/view/take-your-time-cat-nile-pile-manicure-bored-gif-1146754972652164095',
+  'https://tenor.com/view/days-of-our-lives-dool-gabi-hernandez-dimera-move-on-already-camila-banus-gif-19360973',
+];
+function getRandomSoonGif() {
+  return SOON_GIFS[Math.floor(Math.random() * SOON_GIFS.length)];
+}
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
 // Only short triggers: "gæm?" and "gæm when?"; rest are multi-word phrases (substring match)
@@ -132,6 +143,25 @@ function buildSoonTriggerPhrases() {
     'when can we play', 'when can i play', 'is the game up', 'when is the game up', 'is the game open', 'when is the game open',
     'when does the game open', 'when will the game open', 'when does it open', 'when will it open',
     'are servers open', 'when do servers open', 'when will servers open', 'is server up', 'are servers up',
+    'are the servers up', 'servers up currently', 'are the servers up currently', 'servers up right now',
+    // Server-up punctuation variants (?, !, ?!, !?, .) so "servers up?" etc. match
+    'are the servers up?', 'are the servers up!', 'are the servers up?!', 'are the servers up!?', 'are the servers up.',
+    'servers up currently?', 'servers up currently!', 'servers up currently?!', 'servers up currently!?',
+    'are the servers up currently?', 'are the servers up currently!', 'are the servers up currently?!',
+    'servers up right now?', 'servers up right now!', 'servers up right now?!', 'servers up right now!?',
+    'servers up?', 'servers up!', 'servers up?!', 'is server up?', 'is server up!', 'are servers up?', 'are servers up!',
+    // More server/game-up phrasings
+    'servers online', 'are the servers online', 'is the server online', 'are servers online', 'server online',
+    'server status', 'servers status', 'what\'s the server status', 'whats the server status', 'server status?',
+    'are servers live', 'servers live yet', 'is the server live', 'is server live', 'game up', 'game up yet',
+    'is the game up yet', 'is the game up?', 'can we play now', 'can i play now', 'play now', 'play yet',
+    'is it up', 'is it up yet', 'is it up?', 'up yet', 'back up yet', 'servers back up', 'server back up',
+    'are servers back', 'is the server back', 'servers back yet', 'server back yet', 'maintenance over yet',
+    'anyone know if servers are up', 'anyone know if the servers are up', 'check if servers are up',
+    'know if servers are up', 'servers running', 'is the server running', 'are servers running',
+    'game running', 'is the game running', 'can we get on', 'can i get on', 'get on the game',
+    'when can we get on', 'when can i get on', 'is the server working', 'server working',
+    'dumb question but are the servers', 'stupid question but are the servers', 'quick question are the servers',
     'when can we play the game', 'when can i play the game', 'can we play', 'can i play', 'can we play yet', 'can i play yet',
     'ready to play', 'when can we get in', 'can we get in', 'can i get in', 'when can we get in the game',
     'get in the game', 'join the game', 'when can we join',
@@ -182,6 +212,13 @@ const SOON_IMAGE_PHRASES = [
   'when can we play', 'when can i play', 'is the game up', 'when is the game up', 'is the game open', 'when is the game open',
   'when does the game open', 'when will the game open', 'when does it open', 'when will it open',
   'are servers open', 'when do servers open', 'when will servers open', 'is server up', 'are servers up',
+  'are the servers up', 'servers up currently', 'are the servers up currently', 'servers up right now',
+  'are the servers up?', 'are the servers up!', 'are the servers up?!', 'servers up currently?', 'servers up currently?!',
+  'servers up right now?', 'servers up right now?!', 'servers up?', 'servers up!', 'is server up?', 'are servers up?',
+  'servers online', 'are the servers online', 'is the server online', 'server status', 'are servers live',
+  'servers live yet', 'game up yet', 'is the game up yet', 'can we play now', 'can i play now', 'is it up', 'is it up yet',
+  'servers back up', 'server back up', 'are servers back', 'servers back yet', 'anyone know if servers are up',
+  'check if servers are up', 'servers running', 'is the server running', 'dumb question but are the servers',
   'when can we play the game', 'when can i play the game', 'can we play', 'can i play', 'can we play yet', 'can i play yet',
   'ready to play', 'when can we get in', 'can we get in', 'can i get in', 'when can we get in the game',
   'get in the game', 'join the game', 'when can we join',
@@ -1087,12 +1124,10 @@ client.on('messageCreate', async (message) => {
     }
     if (hasSoonTriggerWithImage(message.content)) {
       try {
-        const soonMemePath = getRandomSoonMeme();
-        if (soonMemePath) {
-          await message.reply({ files: [{ attachment: soonMemePath, name: path.basename(soonMemePath) }] });
-        }
+        // Reply with a random Soon GIF (Discord embeds it); fallback to meme image if desired
+        await message.reply({ content: getRandomSoonGif() });
       } catch (err) {
-        console.error('Soon meme reply failed:', err.message);
+        console.error('Soon GIF reply failed:', err.message);
       }
     }
     return;
