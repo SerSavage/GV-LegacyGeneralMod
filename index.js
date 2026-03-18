@@ -55,17 +55,34 @@ function shouldWelcomeAccountAge(user) {
 }
 // Role IDs that count as "nation/faction" choice — welcome only when new user picks one of these for the first time
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
-// Welcome videos when user joins or gets their role — one is picked at random (add more via env NEW_ARRIVAL_VIDEO_URLS comma-separated, or use defaults)
+// Welcome videos when user joins or gets their role — prefer local files in repo (assets/), else Streamable URLs from env
+const WELCOME_VIDEO_PATHS = [
+  path.join(process.cwd(), 'assets', 'WelcomeKnights.mp4'),
+  path.join(process.cwd(), 'assets', 'WelcomeToGV.mp4'),
+];
 const NEW_ARRIVAL_VIDEO_URLS = (process.env.NEW_ARRIVAL_VIDEO_URLS || process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu,https://streamable.com/63lazw')
   .split(',')
   .map(u => u.trim())
   .filter(Boolean);
+function getRandomWelcomeVideoPath() {
+  const existing = WELCOME_VIDEO_PATHS.filter(p => fs.existsSync(p));
+  return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
+}
 function getRandomWelcomeVideoUrl() {
   return NEW_ARRIVAL_VIDEO_URLS[Math.floor(Math.random() * NEW_ARRIVAL_VIDEO_URLS.length)] || 'https://streamable.com/vxi8bu';
 }
-function getWelcomeMessageContent(userMention) {
+const WELCOME_TEXT_BASE = (userMention) => `Welcome, ${userMention}!\n\nCheck out **Welcome** <#${WELCOME_CHANNEL_ID}> and **server-roles** <#${SERVER_ROLES_CHANNEL_ID}> to pick roles.`;
+/** Returns { content, files? } for channel.send. Uses repo video file if present, else Streamable URL in content. */
+function getWelcomeMessagePayload(userMention) {
+  const videoPath = getRandomWelcomeVideoPath();
+  if (videoPath) {
+    return {
+      content: WELCOME_TEXT_BASE(userMention),
+      files: [{ attachment: videoPath, name: path.basename(videoPath) }],
+    };
+  }
   const videoUrl = getRandomWelcomeVideoUrl();
-  return `Welcome, ${userMention}!\n${videoUrl}\n\nCheck out **Welcome** <#${WELCOME_CHANNEL_ID}> and **server-roles** <#${SERVER_ROLES_CHANNEL_ID}> to pick roles.`;
+  return { content: `Welcome, ${userMention}!\n${videoUrl}\n\nCheck out **Welcome** <#${WELCOME_CHANNEL_ID}> and **server-roles** <#${SERVER_ROLES_CHANNEL_ID}> to pick roles.` };
 }
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
 // Images for "Chronicus Generalium" reply in gv-general when user is moved to off-topic — one picked at random (not used for Soon)
@@ -879,7 +896,7 @@ client.on('guildMemberAdd', async (member) => {
   try {
     const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (channel && channel.isTextBased()) {
-      await channel.send({ content: getWelcomeMessageContent(member.user.toString()) });
+      await channel.send(getWelcomeMessagePayload(member.user.toString()));
       if (DEBUG) console.log(`[new-arrival] Posted welcome for ${member.user.tag} in #new-arrivals`);
     } else {
       if (DEBUG) console.log(`[new-arrival] Channel ${NEW_ARRIVALS_CHANNEL_ID} not found or not text-based`);
@@ -918,7 +935,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
   try {
     const channel = await client.channels.fetch(NEW_ARRIVALS_CHANNEL_ID);
     if (channel?.isTextBased()) {
-      await channel.send({ content: getWelcomeMessageContent(newMember.user.toString()) });
+      await channel.send(getWelcomeMessagePayload(newMember.user.toString()));
       if (DEBUG) console.log(`[role-assign] Welcome posted in #new-arrivals for ${newMember.user.tag}`);
     } else {
       if (DEBUG) console.log(`[role-assign] Channel ${NEW_ARRIVALS_CHANNEL_ID} not found or not text-based`);
