@@ -297,6 +297,15 @@ const SPAM_SLUR_TERMS = [
   'niqqa', 'niqqer', 'n1qqa', 'n1qqer', 'n!qqa', 'n!qqer',
   'mein fuhrer', 'mein fuher', 'mein furer', 'fuhrer', 'fuher', 'furer', 'master race', 'masterrace',
   'kike', 'kikes', 'k1ke', 'k!ke', 'kyke', 'kik3', 'k1k3',
+  // Extended "fuck you…" insults – spam trigger (video + redirect)
+  'fuck you, you useless piece of shit', 'fuck you, you absolute waste of oxygen', 'fuck you, you miserable excuse for a human',
+  'fuck you, you walking pile of garbage', 'fuck you, you pathetic sack of nothing', 'fuck you, you brainless waste',
+  'fuck you, you failure in human form', "fuck you and every decision you've ever made", 'fuck you and your entire existence',
+  'fuck you and whatever dumb shit you believe in', 'fuck you and the mess you call a life', 'fuck you, you worthless fuck',
+  'fuck you, you dumb bastard', 'fuck you, you spineless idiot', 'fuck you, you incompetent mess', 'fuck you, you absolute trainwreck',
+  'fuck you, choke on it', 'fuck you, stay down', 'fuck you, get lost forever', 'fuck you, disappear',
+  'fuck you into oblivion and back again', 'fuck you until the universe forgets you exist', "fuck you into a hole you can't crawl out of",
+  'fuck you straight into hell', 'fuck you into dust',
 ].map(w => w.toLowerCase());
 
 // Religion-related "goy" terms – same as religion/politics: redirect to #off-topic with random GIF (no safe-context bypass)
@@ -351,6 +360,33 @@ function buildOffTopicPhrases() {
   add('inbreed');
   add('inbred');
   add('fuck your siblings');
+  // "fuck you bloody" and extended vulgar "fuck you…" insults – off-topic trigger; plain "fuck you" is not in the list
+  add('fuck you bloody');
+  add('fuck you, you useless piece of shit');
+  add('fuck you, you absolute waste of oxygen');
+  add('fuck you, you miserable excuse for a human');
+  add('fuck you, you walking pile of garbage');
+  add('fuck you, you pathetic sack of nothing');
+  add('fuck you, you brainless waste');
+  add('fuck you, you failure in human form');
+  add('fuck you and every decision you\'ve ever made');
+  add('fuck you and your entire existence');
+  add('fuck you and whatever dumb shit you believe in');
+  add('fuck you and the mess you call a life');
+  add('fuck you, you worthless fuck');
+  add('fuck you, you dumb bastard');
+  add('fuck you, you spineless idiot');
+  add('fuck you, you incompetent mess');
+  add('fuck you, you absolute trainwreck');
+  add('fuck you, choke on it');
+  add('fuck you, stay down');
+  add('fuck you, get lost forever');
+  add('fuck you, disappear');
+  add('fuck you into oblivion and back again');
+  add('fuck you until the universe forgets you exist');
+  add('fuck you into a hole you can\'t crawl out of');
+  add('fuck you straight into hell');
+  add('fuck you into dust');
 
   return [...phrases];
 }
@@ -695,21 +731,23 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload) {
   try {
     const channel = await message.client.channels.fetch(REDIRECT_CHANNEL_ID);
     if (!channel?.isTextBased()) return;
-    const movedText = message.content ? String(message.content).slice(0, 1500) : '(no text)';
-    const textParts = [
-      `${message.author.toString()} — moved from <#${TRIGGER_CHANNEL_ID}>:`,
-      `\`\`\`${movedText}${message.content && message.content.length > 1500 ? '…' : ''}\`\`\``,
-      REDIRECT_MESSAGE,
-    ];
+    const raw = message.content ? String(message.content).trim() : '';
+    const movedText = raw ? raw.slice(0, 1500) + (raw.length > 1500 ? '…' : '') : '(no text)';
     const isPayload = gifOrVideoPayload && typeof gifOrVideoPayload === 'object' && !Array.isArray(gifOrVideoPayload);
-    if (isPayload && gifOrVideoPayload.files?.length) {
-      textParts.push(gifOrVideoPayload.content || '');
-      const content = textParts.join('\n\n').trim();
-      await channel.send({ content: content || undefined, files: gifOrVideoPayload.files });
+    const hasFiles = isPayload && gifOrVideoPayload.files?.length;
+    const gifOrUrl = hasFiles ? (gifOrVideoPayload.content || '') : (isPayload ? (gifOrVideoPayload.content || '') : String(gifOrVideoPayload || ''));
+    // Single clean message: user mention, moved-from, original text, one redirect line, then GIF/URL (no duplicate IDs or redirect)
+    const lines = [
+      `${message.author.toString()} — moved from <#${TRIGGER_CHANNEL_ID}>:`,
+      movedText,
+      `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`,
+    ];
+    if (gifOrUrl) lines.push(gifOrUrl);
+    const content = lines.join('\n\n');
+    if (hasFiles) {
+      await channel.send({ content, files: gifOrVideoPayload.files });
     } else {
-      const urlOrContent = isPayload ? (gifOrVideoPayload.content || '') : String(gifOrVideoPayload || '');
-      if (urlOrContent) textParts.push(urlOrContent);
-      await channel.send({ content: textParts.join('\n\n') });
+      await channel.send({ content });
     }
   } catch (err) {
     console.error('Forward to off-topic failed:', err);
