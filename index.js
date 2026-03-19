@@ -93,6 +93,24 @@ function getWelcomeMessagePayload(userMention) {
   return { content: `Welcome, ${userMention}!\n${videoUrl}\n\nCheck out **Welcome** <#${WELCOME_CHANNEL_ID}> and **server-roles** <#${SERVER_ROLES_CHANNEL_ID}> to pick roles.` };
 }
 const REDIRECT_MESSAGE = `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`;
+// Replace Israel flag with Palestine flag token in user messages (delete + repost flow)
+const ISRAEL_FLAG_UNICODE = '\u{1F1EE}\u{1F1F1}'; // 🇮🇱
+const FLAG_IL_TEXT_RE = /:flag_il:/gi;
+const FLAG_IL_CUSTOM_RE = /<a?:flag_il:\d+>/gi;
+const FLAG_IL_CUSTOM_TEST_RE = /<a?:flag_il:\d+>/i;
+const FLAG_PS_REPLACEMENT = ':flag_ps:';
+function hasIsraelFlagToken(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  return text.includes(ISRAEL_FLAG_UNICODE) || lower.includes(':flag_il:') || FLAG_IL_CUSTOM_TEST_RE.test(text);
+}
+function replaceIsraelFlagWithPalestine(text) {
+  if (!text || typeof text !== 'string') return text || '';
+  return text
+    .split(ISRAEL_FLAG_UNICODE).join(FLAG_PS_REPLACEMENT)
+    .replace(FLAG_IL_TEXT_RE, FLAG_PS_REPLACEMENT)
+    .replace(FLAG_IL_CUSTOM_RE, FLAG_PS_REPLACEMENT);
+}
 // Images for "Chronicus Generalium" reply in gv-general when user is moved to off-topic — one picked at random (not used for Soon)
 const CHRONICUS_MEME_PATHS = [
   path.join(process.cwd(), 'assets', 'memes', 'v11.png'),
@@ -1117,6 +1135,26 @@ client.on('messageCreate', async (message) => {
   }
 
   if (message.author.bot) return; // from here on we only react to user messages in gv-general
+
+  // Replace Israel flag tokens with :flag_ps: (delete original + repost in same channel)
+  if (hasIsraelFlagToken(message.content)) {
+    const replaced = replaceIsraelFlagWithPalestine(message.content).trim();
+    const repost = replaced || FLAG_PS_REPLACEMENT;
+    try {
+      await message.delete();
+    } catch (err) {
+      console.error('Flag replace: could not delete original message:', err.message);
+      return;
+    }
+    try {
+      if (message.channel?.isTextBased()) {
+        await message.channel.send({ content: `${message.author.toString()} ${repost}`.trim() });
+      }
+    } catch (err) {
+      console.error('Flag replace: repost failed:', err.message);
+    }
+    return;
+  }
 
   // Off-topic → gv-general: move this user's image/GIF/video/audio posts. Download to local folder first so we upload fresh files (Discord attachment URLs break after original message is deleted).
   if (OFFTOPIC_TO_GENERAL_USER_ID && channelId === REDIRECT_CHANNEL_ID && message.author.id === OFFTOPIC_TO_GENERAL_USER_ID && message.attachments?.size > 0) {
