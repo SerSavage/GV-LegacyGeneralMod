@@ -150,6 +150,51 @@ function getRandomSoonGif() {
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
 // Only short triggers: "gæm?" and "gæm when?"; rest are multi-word phrases (substring match)
 const SOON_EMOJI = '<:Soon:1480665289715617842>';
+// Generic meme: moderation / official server + guild-scale consequence + monkey/primate emoji trope (no real names).
+// Default pool randomizes Discord :monkey: 🐒, :monkey_face: 🐵, :gorilla: 🦍. Override with MONKEY_TROPE_EMOJIS=comma,separated or legacy MONKEY_TROPE_EMOJI single value.
+const MONKEY_TROPE_EMOJIS = (() => {
+  const raw = process.env.MONKEY_TROPE_EMOJIS || process.env.MONKEY_TROPE_EMOJI;
+  if (raw) {
+    const list = String(raw).split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length) return list;
+  }
+  return ['🐒', '🐵', '🦍'];
+})();
+const MONKEY_TROPE_UNICODE_RE = /[\u{1F435}\u{1F648}\u{1F649}\u{1F64A}\u{1F412}]/u;
+function hasMonkeyModerationTrope(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  const primateStrong =
+    MONKEY_TROPE_UNICODE_RE.test(text)
+    || lower.includes(':monkey:')
+    || /<a?:monkey:\d+>/i.test(text)
+    || lower.includes('monkey emoji')
+    || lower.includes('monkey emote')
+    || lower.includes('monkey reaction')
+    || lower.includes('monkey sticker')
+    || lower.includes('primate sticker')
+    || /\b(monkey|primates?)\s+(emoji|emote|reaction|sticker)\b/i.test(lower)
+    || /\b(emoji|emote|reaction|sticker)s?\b.*\b(monkey|primates?)\b/i.test(lower)
+    || (/\bone\s+(emoji|emote|reaction|sticker|monkey|primates?)\b/i.test(lower) && (/\b(monkey|primates?)\b/i.test(lower) || MONKEY_TROPE_UNICODE_RE.test(text)));
+  if (!primateStrong) return false;
+  const escalation =
+    lower.includes('official discord')
+    || lower.includes('official server')
+    || /\bmoderat/.test(lower)
+    || /\bthreat/.test(lower)
+    || lower.includes('whole guild')
+    || lower.includes('entire guild')
+    || lower.includes('guild wide')
+    || lower.includes('guild-wide')
+    || lower.includes('guild extinction')
+    || lower.includes('delete your guild')
+    || lower.includes('collateral')
+    || /\bcoalition\b/.test(lower)
+    || /\bclan deletion\b/.test(lower)
+    || (/\bguild\b/.test(lower) && /\b(ban|banned|banning|warn|warning|sanction)\b/.test(lower))
+    || (/\b(ban|banned|threat)\b/.test(lower) && /\bguild\b/.test(lower));
+  return escalation;
+}
 function buildSoonTriggerPhrases() {
   const phrases = new Set();
   const add = (p) => { if (p && p.length > 0) phrases.add(p.toLowerCase()); };
@@ -1212,6 +1257,17 @@ client.on('messageCreate', async (message) => {
   if (!message.content) {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
     return;
+  }
+
+  // Monkey-emoji / moderation-escalation meme: react only, do not delete or block other handlers
+  if (hasMonkeyModerationTrope(message.content)) {
+    try {
+      const tropeEmoji = MONKEY_TROPE_EMOJIS[Math.floor(Math.random() * MONKEY_TROPE_EMOJIS.length)];
+      await message.react(tropeEmoji);
+      if (DEBUG) console.log(`[monkey-trope] Reacted ${tropeEmoji} for ${message.author.tag}`);
+    } catch (err) {
+      console.error('Monkey trope reaction failed (set MONKEY_TROPE_EMOJIS to comma-separated unicode or <:emoji:id> that exist in this server):', err.message);
+    }
   }
 
   // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + random Miaow image (only when author has Miðland role)
