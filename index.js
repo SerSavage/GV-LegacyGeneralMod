@@ -515,16 +515,6 @@ function hasTriggerWord(text) {
   return false;
 }
 
-// If message contains any safe-context word (game/community talk), don't trigger
-function hasSafeContext(text) {
-  if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
-  for (const word of SAFE_CONTEXT_WORDS) {
-    if (lower.includes(word)) return true;
-  }
-  return false;
-}
-
 // Check if message contains any spam/slur term (case-insensitive)
 function hasSpamSlur(text) {
   if (!text || typeof text !== 'string') return false;
@@ -608,9 +598,95 @@ function isPoliticalOrReligionTerm(word) {
   if (IDEOLOGICAL_TERMS.has(w)) return true;
   if (RELIGION_SINGLE_WORDS.has(w)) return true;
   for (const leader of POLITICAL_LEADERS) {
+    // Short leader names (e.g. "xi") must match as whole word only — avoids YouTube IDs like "XXI" or "v=...xi..." false positives
+    if (leader.length <= 3) {
+      const re = new RegExp('(^|[^a-z0-9])' + leader.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^a-z0-9]|$)', 'i');
+      if (re.test(w)) return true;
+      continue;
+    }
     if (w.includes(leader)) return true;
     // Only match word-as-substring-of-leader when word is at least 3 chars (avoid "i", "in", "an" matching "putin", "bin salman", etc.)
     if (w.length >= 3 && leader.includes(w)) return true;
+  }
+  return false;
+}
+
+// Languages / demonyms that also appear in politics filter — safe when clearly "speak/write/learn …" (not geopolitics)
+const LANGUAGE_LEXICON_EXTRA = [
+  'english', 'korean', 'japanese', 'spanish', 'italian', 'portuguese', 'arabic', 'hindi', 'urdu', 'latin', 'greek',
+  'norwegian', 'danish', 'finnish', 'swedish', 'dutch', 'polish', 'czech', 'slovak', 'hungarian', 'romanian', 'bulgarian',
+  'serbian', 'croatian', 'bosnian', 'slovenian', 'albanian', 'macedonian', 'lithuanian', 'latvian', 'estonian', 'icelandic',
+  'welsh', 'scottish', 'gaelic', 'catalan', 'basque', 'galician', 'maltese', 'hebrew', 'farsi', 'mandarin', 'cantonese',
+  'hokkien', 'shanghainese', 'vietnamese', 'thai', 'khmer', 'lao', 'burmese', 'tagalog', 'malay', 'indonesian', 'swahili',
+  'zulu', 'afrikaans', 'punjabi', 'bengali', 'tamil', 'telugu', 'marathi', 'gujarati', 'nepali', 'sinhala', 'sinhalese',
+  'kurdish', 'pashto', 'mongolian', 'quechua', 'esperanto', 'ukrainian', 'belarusian', 'georgian', 'armenian', 'azerbaijani',
+  'kazakh', 'uzbek', 'tajik', 'turkmen', 'tibetan', 'dzongkha', 'persian', 'palestinian', 'somali', 'amharic', 'yoruba',
+  'igbo', 'hausa', 'xhosa', 'maori', 'samoan', 'tongan', 'hawaiian', 'inuktitut', 'greenlandic', 'faroese',
+  // demonyms often used as "I speak X"
+  'mexican', 'brazilian', 'colombian', 'filipino', 'filipina', 'egyptian', 'turkish', 'russian', 'chinese', 'irish',
+  'american', 'british', 'french', 'german', 'italian', 'spanish', 'japanese', 'korean', 'indian', 'pakistani',
+  'bangladeshi', 'sri lankan', 'nigerian', 'kenyan', 'ethiopian', 'moroccan', 'algerian', 'tunisian', 'libyan',
+  'cuban', 'venezuelan', 'peruvian', 'argentinian', 'chilean', 'ecuadorian', 'guatemalan', 'honduran', 'nicaraguan',
+  'costa rican', 'panamanian', 'dominican', 'jamaican', 'haitian', 'puerto rican', 'canadian', 'australian', 'new zealander',
+  'austrian', 'swiss', 'belgian', 'luxembourgish', 'liechtenstein', 'moldovan', 'slovakian', 'montenegrin', 'kosovar',
+].map(w => w.toLowerCase());
+const ALL_LANGUAGE_LEXICON = new Set([...POLITICAL_COUNTRIES, ...LANGUAGE_LEXICON_EXTRA]);
+const LANGUAGE_VERB_PREFIXES = [
+  'speak', 'speaks', 'speaking', 'spoken',
+  'write', 'writes', 'writing', 'wrote', 'written',
+  'read', 'reads', 'reading',
+  'learn', 'learning', 'learned', 'learnt',
+  'study', 'studying', 'studied',
+  'practice', 'practices', 'practicing', 'practising', 'practiced', 'practised',
+  'translate', 'translating', 'translated',
+  'understand', 'understands', 'understanding', 'understood',
+  'talk', 'talks', 'talking', 'talked',
+  'type', 'types', 'typing', 'typed',
+];
+const LANGUAGE_IN_VERB_RE = /\b(write|read|speak|talk|say|said|saying|text|message|typed|typing|posted|post|chat|chats|chatting|communicate|communicates|communicating)\b/i;
+
+function hasLanguageLearningContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  for (const lang of ALL_LANGUAGE_LEXICON) {
+    if (!lang || lang.length < 2) continue;
+    for (const v of LANGUAGE_VERB_PREFIXES) {
+      if (lower.includes(`${v} ${lang}`)) return true;
+      if (lower.includes(`${v} in ${lang}`)) return true;
+    }
+    if (
+      lower.includes(`fluent in ${lang}`)
+      || lower.includes(`bilingual in ${lang}`)
+      || lower.includes(`trilingual in ${lang}`)
+      || lower.includes(`multilingual in ${lang}`)
+    ) {
+      return true;
+    }
+    if (
+      lower.includes(`${lang} speaker`)
+      || lower.includes(`${lang} native`)
+      || lower.includes(`native ${lang}`)
+      || lower.includes(`${lang}-speaking`)
+    ) {
+      return true;
+    }
+    // "posted in french", "message in german" — language of communication
+    if (lower.includes(` in ${lang}`) && LANGUAGE_IN_VERB_RE.test(lower)) return true;
+  }
+  // Meme / juxtaposition: "cat french speak german" (two language demonyms + speak)
+  if (/\b(french|german|spanish|italian|english|russian|polish|swedish|norwegian|danish|dutch|japanese|korean|chinese|arabic|portuguese)\b.*\b(speak|speaks|speaking)\b.*\b(french|german|spanish|italian|english|russian|polish|swedish|norwegian|danish|dutch|japanese|korean|chinese|arabic|portuguese)\b/.test(lower)) {
+    return true;
+  }
+  return false;
+}
+
+// If message contains any safe-context word (game/community talk), don't trigger
+function hasSafeContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  if (hasLanguageLearningContext(text)) return true;
+  const lower = text.toLowerCase();
+  for (const word of SAFE_CONTEXT_WORDS) {
+    if (lower.includes(word)) return true;
   }
   return false;
 }
@@ -1152,16 +1228,17 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Safe-context BEFORE off-topic/religion so game lines (e.g. "choosing a nation", "more military") are not mis-flagged
+  if (hasSafeContext(message.content)) {
+    if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
+    return; // game/community context – don't trigger
+  }
+
   // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, forward to #off-topic.
   if (hasOffTopicPhrase(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
     await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
     return;
-  }
-
-  if (hasSafeContext(message.content)) {
-    if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
-    return; // game/community context – don't trigger
   }
   if (messageContainsSafeTenorLink(message.content)) {
     if (DEBUG) console.log('[skip] message contains safe tenor GIF (e.g. kittens)');
