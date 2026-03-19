@@ -57,8 +57,8 @@ function shouldWelcomeAccountAge(user) {
 const WELCOME_ROLE_IDS = new Set(['1167525339103248384', '1167525255577870396', '1167525387413229628', '1167524888941187272']); // nation roles + veteran
 // Welcome videos when user joins or gets their role — prefer local files in repo (assets/), else Streamable URLs from env
 const WELCOME_VIDEO_PATHS = [
-  path.join(process.cwd(), 'assets', 'WelcomeKnights.mp4'),
   path.join(process.cwd(), 'assets', 'WelcomeToGV.mp4'),
+  path.join(process.cwd(), 'assets', 'WelcomeKnights.mp4'),
   path.join(process.cwd(), 'assets', 'KnightOfGV.mp4'),
 ];
 const NEW_ARRIVAL_VIDEO_URLS = (process.env.NEW_ARRIVAL_VIDEO_URLS || process.env.NEW_ARRIVAL_VIDEO_URL || 'https://streamable.com/vxi8bu,https://streamable.com/63lazw')
