@@ -120,7 +120,10 @@ function getRandomChronicusMeme() {
   const existing = CHRONICUS_MEME_PATHS.filter(p => fs.existsSync(p));
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
 }
-const CHRONICUS_TEXT = '**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***';
+/** Chronicus body — channel link is also on the line above (see deleteInGeneralAndForwardToOffTopic). */
+function getChronicusAnnouncementText() {
+  return `**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***`;
+}
 
 // Images for Soon trigger only (game/servers/ETA questions): when can we play, is the game up, any eta, etc. — one picked at random, posted with :soon: reaction
 const SOON_MEME_PATHS = [
@@ -663,6 +666,22 @@ function hasOffTopicPhrase(text) {
   return OFF_TOPIC_PHRASES.some(phrase => lower.includes(phrase));
 }
 
+// Broad racial/religious stereotype generalizations (same redirect as vulgar off-topic). Runs before safe-context so it is not bypassed.
+function hasStereotypeRaceReligionRedirect(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  const group = /\b(muslim|muslims|islam|jew|jews|jewish|mexican|mexicans|arab|arabs|black people|whites|white people|asian|asians|indian|indians|hindu|hindus|christian|christians|catholic|catholics|protestant|mormon|mormons|latino|latinos|hispanic|illegal aliens?|immigrants?)\b/i;
+
+  if (lower.includes('south of the border') && /\b(mexican|mexico|latino|hispanic|illegal|border)\b/.test(lower)) return true;
+  if (/\bisn'?t everyone\b/.test(lower) && group.test(text)) return true;
+  if (/\baren'?t (all|everyone|most people)\b/.test(lower) && group.test(text)) return true;
+  if (/\bwhy (do|are) (all|most|every)\b/.test(lower) && group.test(text)) return true;
+  if (/\b(all|most) (muslims|jews|christians|mexicans|blacks|whites|asians|arabs|hindus|immigrants)\s+(are|like|so|always|just)\b/i.test(lower)) return true;
+  if (/\bdo (all|most) (muslims|jews|christians|hindus|mormons)\b/i.test(lower)) return true;
+  if (/\b(is|are) (all|most) (muslims|jews|christians|hindus|mexicans)\b/i.test(lower)) return true;
+  return false;
+}
+
 // Check if message contains any goy-related term (religion filter)
 function hasGoyTerm(text) {
   if (!text || typeof text !== 'string') return false;
@@ -1005,7 +1024,7 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload) {
   try {
     const generalChannel = await message.client.channels.fetch(GV_GENERAL_CHANNEL_ID);
     if (generalChannel?.isTextBased()) {
-      const chronicusContent = `${message.author.toString()}\n\n${CHRONICUS_TEXT}`;
+      const chronicusContent = `${message.author.toString()}\n\n<#${REDIRECT_CHANNEL_ID}>\n\n${getChronicusAnnouncementText()}`;
       const memePath = getRandomChronicusMeme();
       const payload = memePath
         ? { content: chronicusContent, files: [{ attachment: memePath, name: path.basename(memePath) }] }
@@ -1386,6 +1405,13 @@ client.on('messageCreate', async (message) => {
     const videoPayload = getSpamVideoPayload();
     const gifOrVideoPayload = repeated ? videoPayload : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload);
+    return;
+  }
+
+  // Racial/religious stereotype bait (e.g. "isn't everyone south of the border Mexican?") — off-topic, no safe-context bypass
+  if (hasStereotypeRaceReligionRedirect(message.content)) {
+    if (isExcludedFromDeleteAndMeme(message)) return;
+    await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
     return;
   }
 
