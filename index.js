@@ -164,6 +164,21 @@ const MONKEY_TROPE_UNICODE_RE = /[\u{1F435}\u{1F648}\u{1F649}\u{1F64A}\u{1F412}]
 function hasMonkeyModerationTrope(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
+  // "Official GV Discord" etc. — must not require contiguous "official discord"
+  const officialDiscordLoose = /\bofficial\b/.test(lower) && /\bdiscord\b/.test(lower);
+
+  // Same meme without naming monkey: official Discord + emotes/reactions framed as conflict (siege weapons, bans, etc.)
+  const emoteModerationMeme =
+    officialDiscordLoose
+    && /\b(emote|emotes|emoji|reaction|reacts?|sticker)\b/.test(lower)
+    && (
+      /\b(siege|weapon|weapons|weaponized)\b/.test(lower)
+      || lower.includes('peaceful until')
+      || /\b(ban|banned|warn|warning|moderat|threat)\b/.test(lower)
+      || /\bguild\b/.test(lower)
+    );
+  if (emoteModerationMeme) return true;
+
   const primateStrong =
     MONKEY_TROPE_UNICODE_RE.test(text)
     || lower.includes(':monkey:')
@@ -179,6 +194,7 @@ function hasMonkeyModerationTrope(text) {
   if (!primateStrong) return false;
   const escalation =
     lower.includes('official discord')
+    || officialDiscordLoose
     || lower.includes('official server')
     || /\bmoderat/.test(lower)
     || /\bthreat/.test(lower)
@@ -195,6 +211,57 @@ function hasMonkeyModerationTrope(text) {
     || (/\b(ban|banned|threat)\b/.test(lower) && /\bguild\b/.test(lower));
   return escalation;
 }
+
+/**
+ * Guild / nation / war stories: monkey noises as comms, language workarounds, or “you know you’re winning” memes.
+ * Kept separate from moderation trope to avoid weakening those signals.
+ */
+function hasMonkeyNoisesCultureTrope(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+
+  // Core: “monkey noise(s)”, “monkey sound(s)”, close primate variants
+  if (/\bmonkey\s+noise(s)?\b/.test(lower)) return true;
+  if (/\bmonkey\s+sounds?\b/.test(lower)) return true;
+  if (/\bape\s+noise(s)?\b/.test(lower)) return true;
+  if (/\bgorilla\s+noise(s)?\b/.test(lower)) return true;
+
+  // Verbs + monkey + noise (incl. “start hearing people making monkey noises”)
+  if (/\b(making|made|make|doing|do|hearing|heard|hear|starts?\s+hearing|started\s+hearing)\s+[^.\n]{0,100}\bmonkey\s+noise(s)?\b/.test(lower)) return true;
+  if (/\bpeople\s+(making|doing)\s+monkey\b/.test(lower)) return true;
+
+  // Louder / progressive monkey comms (“progressively louder monkey noises to indicate pushes”)
+  if (/\bprogressively\s+(louder\s+)?monkey\b/.test(lower)) return true;
+  if (/\blouder\s+monkey\s+noise(s)?\b/.test(lower)) return true;
+  if (/\bmonkey\s+noise(s)?\b[^.]{0,140}\b(push|pushes|signal|raid|siege|objective|timing|coordination|callout|callouts|nation|guild|war|fight|fighting|winning|losing|spanish|english|barrier|language|communicat|vc|comms?)\b/.test(lower)) return true;
+  if (/\b(push|pushes|signal|raid|callout|coordination|communicat|nation|guild|spanish|english|language\s+barrier|half\s+our\s+nation)[^.]{0,140}\bmonkey\s+noise(s)?\b/.test(lower)) return true;
+
+  // “Monkey” as strat / meta / comms language
+  if (/\bmonkey\s+(strat|tactics?|meta|comms?|callouts?|vc\s+language)\b/.test(lower)) return true;
+  if (/\bmonkey\s+(as|for)\s+(the\s+)?(comm|communication|coordination|signal|language)\b/.test(lower)) return true;
+  if (/\bcommunicat(e|ing|ion)?\s+(via|with|using)\s+monkey\b/.test(lower)) return true;
+  if (/\b(spoke|speak|speaking|talk|talking)\s+(in\s+)?monkey\b/.test(lower)) return true;
+
+  // Meme vocalizations when clearly gaming / primate adjacent (not plain “ook” spam)
+  if (/\b(ooh\s+ooh|oo\s+oo|ook\s+ook)\b/.test(lower)) {
+    if (/\b(ah\s+ah|monkey|gorilla|ape|push|war|raid|nation|guild|fight|fighting|winning)\b/.test(lower)) return true;
+  }
+  if (/\buga\s+buga\b/.test(lower) && /\b(nation|guild|war|push|raid|fight|vc)\b/.test(lower)) return true;
+
+  // Phrase bag: common paraphrases (substring, gv-general context)
+  const noiseCulturePhrases = [
+    'return to monkey', 'returned to monkey', 'devolved to monkey', 'monkey hours',
+    'went monkey mode', 'full monkey', 'monkey only', 'only monkey noises',
+    'coordination was monkey', 'comms were monkey', 'comms was monkey', 'shotcaller monkey',
+    'language barrier', // only with monkey (checked below)
+  ];
+  for (const p of noiseCulturePhrases) {
+    if (lower.includes(p) && /\b(monkey|gorilla|ape|ooh\s+ooh|noise)\b/.test(lower)) return true;
+  }
+
+  return false;
+}
+
 function buildSoonTriggerPhrases() {
   const phrases = new Set();
   const add = (p) => { if (p && p.length > 0) phrases.add(p.toLowerCase()); };
@@ -1259,8 +1326,8 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Monkey-emoji / moderation-escalation meme: react only, do not delete or block other handlers
-  if (hasMonkeyModerationTrope(message.content)) {
+  // Monkey-emoji / moderation trope OR in-game “monkey noises” comms culture: react only, do not return
+  if (hasMonkeyModerationTrope(message.content) || hasMonkeyNoisesCultureTrope(message.content)) {
     try {
       const tropeEmoji = MONKEY_TROPE_EMOJIS[Math.floor(Math.random() * MONKEY_TROPE_EMOJIS.length)];
       await message.react(tropeEmoji);
