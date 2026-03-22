@@ -456,6 +456,8 @@ const SAFE_CONTEXT_BASE = [
   'bloodbath', 'meow army',
   // Nation choice / faction traits – game context (e.g. "Soon you'll be choosing a nation", "some are more military")
   'choosing a nation', 'choosing a faction', 'more military', 'nation choice', 'pick a nation',
+  // Player region / server zone shorthand (not IRL politics)
+  'north america', 'south america', 'southeast asia', 'south east asia', 'latin america', 'oceania',
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
@@ -490,7 +492,7 @@ const GOY_TERMS = [
   'goy', 'goyim', 'goyish', 'goys', 'goyische', 'goyishe', 'goyisher', 'goyem', 'goi', 'goim', 'g0y', 'g0yim',
 ].map(w => w.toLowerCase());
 
-// Off-topic phrases – vulgar/objectifying by body, gender, race, nationality. Bot replies with GIF + redirect (no safe-context bypass)
+// Off-topic phrases – vulgar/objectifying by body, gender, race, nationality. Medical/psychiatric slurs: hasMedicalPsychiatricInsult (before safe-context). Bot replies with GIF + redirect (no safe-context bypass)
 function buildOffTopicPhrases() {
   const body = ['fat', 'skinny', 'thick', 'curvy', 'chubby', 'bbw', 'petite'];
   const person = ['chick', 'chicks', 'guy', 'guys', 'girl', 'girls', 'dude', 'dudes', 'man', 'men', 'woman', 'women', 'boy', 'boys', 'babe', 'babes'];
@@ -682,6 +684,74 @@ function hasStereotypeRaceReligionRedirect(text) {
   return false;
 }
 
+// Psychiatric / disability slurs and using clinical terms as insults — gv-general → off-topic (no safe-context bypass).
+// Not applied to idiom-only "lunatic(s)" here; OFF_TOPIC_SAFE_PHRASES still shields that phrase from *other* off-topic lists.
+const MEDICAL_PSYCH_INSULT_SUBSTRINGS = [
+  'schizo', 'schizophren', 'schizoaffective',
+  'psychopath', 'psychotic', 'psychosis', 'sociopath',
+  'retard', 'retarded', 'libtard', 'conservatard', // leetspeak variants partly caught by normalizeForMatch in check below
+  'autist', 'autistic', 'asperger', 'aspie', 'tism',
+  'manic', 'maniac',
+  'delusional', 'delusion',
+  'mentally ill', 'mental illness', 'mental patient',
+  'nutcase', 'nutjob', 'nut job', 'nuthouse', 'nutters', 'nutter',
+  'spastic', 'spaz',
+  'mongoloid',
+  'down syndrome', 'downs syndrome',
+  'cripple', 'crippled',
+  'psych ward', 'psych hospital', 'loony', 'loonies',
+  'neurotic',
+  'dementia', 'alzheimer',
+  'special needs', 'short bus',
+  'feeble minded', 'feeble-minded',
+  'window licker',
+  'munchausen',
+  'hysteric', 'hysteria',
+  'psych eval',
+  'dissociat', // dissociative, dissociating as insult
+  'narcissistic personality',
+  'borderline personality',
+].map(s => s.toLowerCase());
+
+function hasMedicalPsychiatricInsult(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  const normalized = normalizeForMatch(lower);
+  for (const sub of MEDICAL_PSYCH_INSULT_SUBSTRINGS) {
+    if (lower.includes(sub)) return true;
+    const subNorm = normalizeForMatch(sub);
+    if (subNorm.length >= 3 && normalized.includes(subNorm)) return true;
+  }
+  return false;
+}
+console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (off-topic, bypasses safe-context).`);
+
+// Real-world geopolitical keywords (POLITICAL_EXTRA-style + close variants). Runs BEFORE safe-context so "guilds + NATO" still → #off-topic (random GIF, same as religion/politics).
+const GEOPOLITICAL_HARD_SUBSTRINGS = [
+  'nato', 'sanctions', 'sanctioned', 'sanction ',
+  'invasion', 'invade',
+  'regime',
+  'geopolitical', 'embargo', 'embargoes',
+  'intervention', 'annexation', 'insurgency',
+  'war crime', 'war crimes',
+].map(s => s.toLowerCase());
+
+/** UN / U.N. without matching Spanish article "un" alone */
+const GEOPOLITICAL_UN_RE = /\b(?:the\s+)?u\.?\s*n\.?\b|\bunited\s+nations\b|\bun\s+security\b|\bun\s+general\b|\bun\s+council\b|\bun\s+vote\b|\bun\s+resolution\b|\bun\s+peacekeeping\b/i;
+
+function hasGeopoliticalHardRedirect(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  for (const s of GEOPOLITICAL_HARD_SUBSTRINGS) {
+    if (lower.includes(s.trim())) return true;
+  }
+  // "sanction" at word start / after space (sanctioning, sanctions already caught)
+  if (/\bsanction/i.test(text)) return true;
+  if (/\bstates\b/.test(lower)) return true;
+  if (GEOPOLITICAL_UN_RE.test(text)) return true;
+  return false;
+}
+
 // Check if message contains any goy-related term (religion filter)
 function hasGoyTerm(text) {
   if (!text || typeof text !== 'string') return false;
@@ -711,7 +781,8 @@ const POLITICAL_LEADERS = new Set([
   'musk', 'kim jong', 'mcconnell', 'pelosi', 'schumer', 'johnson', 'sunak', 'macron', 'scholz',
   'rishi', 'boris', 'merkel', 'trudeau', 'erdogan', 'mbs', 'bin salman', 'khamenei', 'rouhani',
 ].map(w => w.toLowerCase()));
-const POLITICAL_EXTRA_WORDS = new Set(['states', 'nato', 'un', 'eu', 'sanctions', 'invasion', 'regime']);
+// Note: 'eu' omitted — EU/NA/SEA/AU etc. are allowlisted as region shorthands in REGION_OR_SERVER_ZONE_WORDS
+const POLITICAL_EXTRA_WORDS = new Set(['states', 'nato', 'un', 'sanctions', 'invasion', 'regime']);
 // Single-word religion/identity terms so posting e.g. "church", "muslims", "jews" triggers (even if not in words.txt)
 const RELIGION_SINGLE_WORDS = new Set([
   'church', 'christ', 'jesus', 'god', 'allah', 'prayer', 'pray', 'mosque', 'bible', 'quran', 'holy', 'religious', 'religion',
@@ -742,6 +813,7 @@ const IDEOLOGICAL_PHRASES = [
 function isPoliticalOrReligionTerm(word) {
   if (!word) return false;
   const w = word.toLowerCase();
+  if (REGION_OR_SERVER_ZONE_WORDS.has(w)) return false;
   if (POLITICAL_EXTRA_WORDS.has(w)) return true;
   if (POLITICAL_COUNTRIES.has(w)) return true;
   if (IDEOLOGICAL_TERMS.has(w)) return true;
@@ -887,8 +959,13 @@ function tokenizeWords(text) {
     .filter(w => w.length > 0);
 }
 
+// gv-general: allow region / ping-bucket shorthands (not geopolitical discussion)
+const REGION_OR_SERVER_ZONE_WORDS = new Set([
+  'na', 'eu', 'asia', 'sea', 'au', 'oce', 'oceania', 'apac', 'emea', 'latam', 'americas', 'gcc', 'mena', 'cis',
+  'kr', 'jp', 'cn', 'tw', 'hk', 'sg', 'ph', 'th', 'vn', 'id', 'my', 'nz',
+].map(w => w.toLowerCase()));
 // Never count these as religion/politics trigger words (common words / game terms that match leaders or lists by substring)
-const TRIGGER_WORD_IGNORE = new Set(['good', 'goods', 'mod', 'mods'].map(w => w.toLowerCase())); // "mod" matches leader "modi"; "Mod" = game mod
+const TRIGGER_WORD_IGNORE = new Set([...['good', 'goods', 'mod', 'mods'].map(w => w.toLowerCase()), ...REGION_OR_SERVER_ZONE_WORDS]);
 function wordMatchesTriggerWord(word) {
   if (!word) return false;
   if (TRIGGER_WORD_IGNORE.has(word.toLowerCase())) return false;
@@ -1412,6 +1489,21 @@ client.on('messageCreate', async (message) => {
   if (hasStereotypeRaceReligionRedirect(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return;
     await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
+    return;
+  }
+
+  // Psychiatric / disability slurs (e.g. "schizo", "they're autistic") — off-topic, no safe-context bypass
+  if (hasMedicalPsychiatricInsult(message.content)) {
+    if (isExcludedFromDeleteAndMeme(message)) return;
+    await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
+    return;
+  }
+
+  // Geopolitical keywords (states, NATO, UN, sanctions, invasion, regime, …) — #off-topic even if message also has guild/nation safe-context
+  if (hasGeopoliticalHardRedirect(message.content)) {
+    if (isExcludedFromDeleteAndMeme(message)) return;
+    const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+    await deleteInGeneralAndForwardToOffTopic(message, randomGif);
     return;
   }
 
