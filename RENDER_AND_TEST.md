@@ -16,8 +16,9 @@ If the bot crashes on Render with `Error: Used disallowed intents`, enable **Pri
 
 **TRIGGER_CHANNEL_ID** = the channel where the bot **listens for messages** (slurs, off-topic, religion/politics, Soon, etc.). That channel is **#gv-general**, not off-topic.
 
-- **TRIGGER_CHANNEL_ID** = **#gv-general** (1166738417539887218) → bot reads messages here and reacts (delete + forward to off-topic, or Soon emoji).
-- **REDIRECT_CHANNEL_ID** = **#off-topic** (1168446788810842172) → where the bot **sends** moved messages.
+- **TRIGGER_CHANNEL_ID** = **#gv-general** (1166738417539887218) → bot reads messages here and reacts (delete + repost to the hold channel, Chronicus ping to off-topic, or Soon emoji).
+- **MOVED_BY_BOT_CHANNEL_ID** = dedicated channel (default `1485211311070511225`) → where **deleted-from-gv-general** messages are **reposted** (text + GIF) so #off-topic stays conversational.
+- **REDIRECT_CHANNEL_ID** = **#off-topic** (1168446788810842172) → Chronicus + “please continue here” in gv-general and in the repost footer; **not** where the bot dumps moved message bodies anymore.
 
 So do **not** remove TRIGGER_CHANNEL_ID. If you leave it **unset** on Render, the bot uses the default gv-general ID. If you set it to the wrong value (e.g. the off-topic channel), the bot would listen in the wrong place and gv-general would never trigger. **Either leave it unset (recommended) or set it to `1166738417539887218`.**
 
@@ -34,7 +35,8 @@ In Render: your service → **Environment** tab.
 | GV_GENERAL_CHANNEL_ID | `1166738417539887218` | No (default = same as trigger) |
 | ADMIN_JOIN_CHANNEL_ID | `1166746316999757864` | No (default = admin) |
 | **OFFTOPIC_TO_GENERAL_USER_ID** | (Discord user ID) | No — if set, that user’s image/GIF posts in off-topic are moved to gv-general. **Set in Render only; do not put real IDs in the repo.** |
-| REDIRECT_CHANNEL_ID | (hardcoded in code as 1168446788810842172) | — |
+| REDIRECT_CHANNEL_ID | #off-topic (default `1168446788810842172`) | No — Chronicus / “continue in off-topic” links |
+| MOVED_BY_BOT_CHANNEL_ID | Hold/archive channel (default `1485211311070511225`) | No — where moved gv-general posts are reposted |
 | DEBUG | `1` | No (set to `1` only when debugging) |
 
 **Minimal setup:** only **DISCORD_TOKEN** is required. Leave the rest unset to use defaults.

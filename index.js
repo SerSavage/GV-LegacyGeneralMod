@@ -16,7 +16,10 @@ const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGE
 const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 // Message to send when a word is detected
-const REDIRECT_CHANNEL_ID = '1168446788810842172';
+// #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
+const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
+// Bot-moved gv-general posts land here so #off-topic chat flow stays clean; message body still tells users to use off-topic
+const MOVED_BY_BOT_CHANNEL_ID = String(process.env.MOVED_BY_BOT_CHANNEL_ID || '1485211311070511225');
 // User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
 // User ID whose media (GIFs, images, videos, tenor.com links) with religious/political content in the message text get moved to #off-topic
@@ -120,7 +123,7 @@ function getRandomChronicusMeme() {
   const existing = CHRONICUS_MEME_PATHS.filter(p => fs.existsSync(p));
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
 }
-/** Chronicus body — channel link is also on the line above (see deleteInGeneralAndForwardToOffTopic). */
+/** Chronicus body — channel link is also on the line above (see deleteInGeneralAndForwardMovedHold). */
 function getChronicusAnnouncementText() {
   return `**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***`;
 }
@@ -418,7 +421,7 @@ const TENOR_GIFS = [
 // GIF for off-topic phrases (body/gender/race vulgar) – Mace Windu "it's settled then"
 const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 
-// Reference: which media goes with which trigger (all in gv-general → delete + forward to #off-topic unless noted)
+// Reference: which media goes with which trigger (all in gv-general → delete + repost to MOVED_BY_BOT_CHANNEL; Chronicus in gv-general → #off-topic unless noted)
 // • Slurs (first time)  → random TENOR_GIF  | Slurs (repeated in 1h) → VIDEO_URL (TMFIAR streamable.com/e/mwfkm2)
 // • Off-topic phrases   → OFF_TOPIC_GIF (Mace Windu only)
 // • Religion/politics  → random TENOR_GIF
@@ -1077,27 +1080,27 @@ function isExcludedFromDeleteAndMeme(message) {
   return /savage|unban/.test(name);
 }
 
-// Delete message in gv-general and forward it to #off-topic with user tag and same GIF/video response; then post Chronicus Generalium in gv-general
+// Delete message in gv-general, repost to MOVED_BY_BOT_CHANNEL (hold/archive), still tell user to continue in #off-topic; then Chronicus in gv-general links off-topic
 // gifOrVideoPayload: string (GIF/video URL) OR { content?: string, files?: Array } so video can be sent as attachment for proper Discord embed
-async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload) {
+async function deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload) {
   try {
     await message.delete();
   } catch (err) {
     console.error('Could not delete message in gv-general (need Manage Messages):', err.message);
   }
   try {
-    const channel = await message.client.channels.fetch(REDIRECT_CHANNEL_ID);
+    const channel = await message.client.channels.fetch(MOVED_BY_BOT_CHANNEL_ID);
     if (!channel?.isTextBased()) return;
     const raw = message.content ? String(message.content).trim() : '';
     const movedText = raw ? raw.slice(0, 1500) + (raw.length > 1500 ? '…' : '') : '(no text)';
     const isPayload = gifOrVideoPayload && typeof gifOrVideoPayload === 'object' && !Array.isArray(gifOrVideoPayload);
     const hasFiles = isPayload && gifOrVideoPayload.files?.length;
     const gifOrUrl = hasFiles ? (gifOrVideoPayload.content || '') : (isPayload ? (gifOrVideoPayload.content || '') : String(gifOrVideoPayload || ''));
-    // Single clean message: user mention, moved-from, original text, one redirect line, then GIF/URL (no duplicate IDs or redirect)
+    // Hold channel = where the post lands; redirect line still points to #off-topic for real discussion
     const lines = [
-      `${message.author.toString()} — moved from <#${TRIGGER_CHANNEL_ID}>:`,
+      `${message.author.toString()} — moved from <#${TRIGGER_CHANNEL_ID}> by bot:`,
       movedText,
-      `Please move to <#${REDIRECT_CHANNEL_ID}> instead.`,
+      `Please continue in <#${REDIRECT_CHANNEL_ID}> instead.`,
     ];
     if (gifOrUrl) lines.push(gifOrUrl);
     const content = lines.join('\n\n');
@@ -1107,7 +1110,7 @@ async function deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload) {
       await channel.send({ content });
     }
   } catch (err) {
-    console.error('Forward to off-topic failed:', err);
+    console.error('Forward to moved-by-bot hold channel failed:', err);
   }
   try {
     const generalChannel = await message.client.channels.fetch(GV_GENERAL_CHANNEL_ID);
@@ -1221,6 +1224,7 @@ client.once('clientReady', () => {
   botReadyAt = Date.now();
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
+  console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus still points to <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
   console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
   console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
 
@@ -1412,7 +1416,7 @@ client.on('messageCreate', async (message) => {
     return; // only gv-general
   }
 
-  // Specific user: move their media (GIF/image/video or tenor.com links) when the message text contains religion/politics to #off-topic
+  // Specific user: move their media (GIF/image/video or tenor.com links) when the message text contains religion/politics → hold channel
   if (message.author.id === MEDIA_RELIGION_OFFTOPIC_USER_ID) {
     const hasImageOrVideo = message.attachments?.some(
       a => IMAGE_CONTENT_TYPES.test(a.contentType || '') || VIDEO_CONTENT_TYPES.test(a.contentType || '') || IMAGE_EXTENSIONS.test(a.name || '')
@@ -1422,8 +1426,8 @@ client.on('messageCreate', async (message) => {
     const hasReligionPolitics = message.content && shouldTriggerReligionPolitics(message.content);
     if (hasMedia && hasReligionPolitics) {
       const randomGifMedia = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-      await deleteInGeneralAndForwardToOffTopic(message, randomGifMedia);
-      if (DEBUG) console.log(`[media-religion] Moved ${message.author.tag} media+religion/politics to off-topic`);
+      await deleteInGeneralAndForwardMovedHold(message, randomGifMedia);
+      if (DEBUG) console.log(`[media-religion] Moved ${message.author.tag} media+religion/politics to hold channel`);
       return;
     }
   }
@@ -1502,7 +1506,7 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video. Delete in gv-general, forward to #off-topic.
+  // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video. Delete in gv-general, repost to hold channel.
   if (hasSpamSlur(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
     const userId = message.author.id;
@@ -1510,29 +1514,29 @@ client.on('messageCreate', async (message) => {
     recordSlurReply(userId);
     const videoPayload = getSpamVideoPayload();
     const gifOrVideoPayload = repeated ? videoPayload : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-    await deleteInGeneralAndForwardToOffTopic(message, gifOrVideoPayload);
+    await deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload);
     return;
   }
 
-  // Racial/religious stereotype bait (e.g. "isn't everyone south of the border Mexican?") — off-topic, no safe-context bypass
+  // Racial/religious stereotype bait (e.g. "isn't everyone south of the border Mexican?") — hold channel, no safe-context bypass
   if (hasStereotypeRaceReligionRedirect(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return;
-    await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
+    await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
-  // Psychiatric / disability slurs (e.g. "schizo", "they're autistic") — off-topic, no safe-context bypass
+  // Psychiatric / disability slurs (e.g. "schizo", "they're autistic") — hold channel, no safe-context bypass
   if (hasMedicalPsychiatricInsult(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return;
-    await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
+    await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
-  // Geopolitical keywords (states, NATO, UN, sanctions, invasion, regime, …) — #off-topic even if message also has guild/nation safe-context
+  // Geopolitical keywords (states, NATO, UN, sanctions, invasion, regime, …) — hold channel even if message also has guild/nation safe-context
   if (hasGeopoliticalHardRedirect(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return;
     const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-    await deleteInGeneralAndForwardToOffTopic(message, randomGif);
+    await deleteInGeneralAndForwardMovedHold(message, randomGif);
     return;
   }
 
@@ -1542,10 +1546,10 @@ client.on('messageCreate', async (message) => {
     return; // game/community context – don't trigger
   }
 
-  // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, forward to #off-topic.
+  // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, repost to hold channel.
   if (hasOffTopicPhrase(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
-    await deleteInGeneralAndForwardToOffTopic(message, OFF_TOPIC_GIF);
+    await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
   if (messageContainsSafeTenorLink(message.content)) {
@@ -1559,10 +1563,10 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Religion/politics/ideological: random GIF. Delete in gv-general, forward to #off-topic.
+  // Religion/politics/ideological: random GIF. Delete in gv-general, repost to hold channel.
   if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-  await deleteInGeneralAndForwardToOffTopic(message, randomGif);
+  await deleteInGeneralAndForwardMovedHold(message, randomGif);
 });
 
 // --- Health check server (for Render: readiness + keep-alive) ---
