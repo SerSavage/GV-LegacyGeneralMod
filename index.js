@@ -581,6 +581,17 @@ const VIDEO_PATH = process.env.VIDEO_PATH || (() => {
   if (process.platform === 'win32') return 'C:\\Users\\serje\\Downloads\\TMFIAR.mp4';
   return inRepo;
 })();
+// "Poor … Savage" reply in gv-general (override path on Render; bundle mp4 in assets for deploy)
+const POOR_SAVAGE_VIDEO_PATH = process.env.POOR_SAVAGE_VIDEO_PATH || path.join(process.cwd(), 'assets', 'The_Way_We_Raid_Gloria_Victis.mp4');
+
+/** e.g. "Poor unban Savage", "Poor little Savage" — requires at least one character between Poor and Savage */
+function hasPoorSomethingSavageTrigger(text) {
+  if (!text || typeof text !== 'string') return false;
+  const m = text.match(/\bpoor\s+(.+?)\s+\bsavage\b/is);
+  if (!m) return false;
+  const mid = m[1].replace(/\s+/g, ' ').trim();
+  return mid.length >= 1 && mid.length <= 400;
+}
 
 // Load trigger words from one or more files (comma-separated; multiple lines merged)
 function loadWordsFromFile(path) {
@@ -1431,6 +1442,24 @@ client.on('messageCreate', async (message) => {
     } catch (err) {
       console.error('Monkey trope reaction failed (set MONKEY_TROPE_EMOJIS to comma-separated unicode or <:emoji:id> that exist in this server):', err.message);
     }
+  }
+
+  // "Poor … Savage" — reply with raid meme video (gv-general only)
+  if (hasPoorSomethingSavageTrigger(message.content)) {
+    const vidPath = POOR_SAVAGE_VIDEO_PATH;
+    try {
+      if (fs.existsSync(vidPath)) {
+        await message.reply({
+          files: [{ attachment: vidPath, name: path.basename(vidPath) }],
+        });
+        if (DEBUG) console.log(`[poor-savage] Video reply for ${message.author.tag}`);
+      } else {
+        console.error(`Poor Savage video missing: ${vidPath} — set POOR_SAVAGE_VIDEO_PATH or add assets/The_Way_We_Raid_Gloria_Victis.mp4`);
+      }
+    } catch (err) {
+      console.error('Poor Savage video reply failed:', err.message);
+    }
+    return;
   }
 
   // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + random Miaow image (only when author has Miðland role)
