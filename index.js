@@ -1625,12 +1625,25 @@ if (!DISCORD_TOKEN) {
 }
 const BOT_TOKEN = String(DISCORD_TOKEN).trim();
 console.log('Attempting Discord login...');
-client.login(BOT_TOKEN)
-  .then(() => {
-    // login() resolves after ready in discord.js; keep a log here so Render shows it conclusively.
-    console.log('Discord login ok (ready).');
-  })
-  .catch((err) => {
-    console.error('Discord login failed:', err.message || err);
-    process.exit(1);
-  });
+// Heartbeat so Render logs show if process is alive/restarting.
+setInterval(() => {
+  const mu = process.memoryUsage();
+  const mb = (n) => Math.round((n / 1024 / 1024) * 10) / 10;
+  console.log(`[hb] uptime=${Math.round(process.uptime())}s rss=${mb(mu.rss)}MB heapUsed=${mb(mu.heapUsed)}MB`);
+}, 30000).unref?.();
+
+try {
+  const p = client.login(BOT_TOKEN);
+  Promise.resolve(p)
+    .then(() => {
+      // login() resolves after ready in discord.js; keep a log here so Render shows it conclusively.
+      console.log('Discord login ok (ready).');
+    })
+    .catch((err) => {
+      console.error('Discord login failed:', err?.message || err);
+      process.exit(1);
+    });
+} catch (err) {
+  console.error('Discord login threw synchronously:', err?.message || err);
+  process.exit(1);
+}
