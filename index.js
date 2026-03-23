@@ -1615,7 +1615,13 @@ client.on('warn', (info) => {
   console.warn('Discord client warn:', info);
 });
 client.on('debug', (info) => {
-  console.log('Discord debug:', info);
+  const s = String(info || '');
+  // Never leak token-like values to logs.
+  if (/provided token/i.test(s)) {
+    console.log('Discord debug: [token redacted]');
+    return;
+  }
+  console.log('Discord debug:', s);
 });
 client.on('shardReady', (id) => {
   console.log(`Discord shard ${id} ready`);
