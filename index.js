@@ -1231,7 +1231,7 @@ const client = new Client({
   }),
 });
 
-client.once('clientReady', () => {
+client.once('ready', () => {
   botReadyAt = Date.now();
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
@@ -1611,7 +1611,13 @@ if (!DISCORD_TOKEN) {
   console.error('Set DISCORD_TOKEN in environment (e.g. on Render: Environment tab).');
   process.exit(1);
 }
-client.login(DISCORD_TOKEN).catch((err) => {
-  console.error('Discord login failed:', err.message || err);
-  process.exit(1);
-});
+console.log('Attempting Discord login...');
+client.login(DISCORD_TOKEN)
+  .then(() => {
+    // login() resolves after ready in discord.js; keep a log here so Render shows it conclusively.
+    console.log('Discord login ok (ready).');
+  })
+  .catch((err) => {
+    console.error('Discord login failed:', err.message || err);
+    process.exit(1);
+  });

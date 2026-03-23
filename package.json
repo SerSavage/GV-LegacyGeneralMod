@@ -6,7 +6,7 @@
   "description": "Discord bot: when a monitored word is posted, replies with GIF and redirect to channel",
   "main": "index.js",
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "scripts": {
     "start": "node index.js"
