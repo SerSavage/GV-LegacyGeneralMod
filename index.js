@@ -2,11 +2,20 @@ const { Client, GatewayIntentBits, Options } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const dns = require('dns');
 const Parser = require('rss-parser');
 
 // --- Config (env or defaults for local) ---
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 10000;
+// Some hosts prefer IPv6 first; Discord gateway can stall there.
+// Force IPv4-first DNS resolution for more reliable gateway connects.
+try {
+  dns.setDefaultResultOrder('ipv4first');
+  console.log('DNS result order: ipv4first');
+} catch (e) {
+  console.warn('Could not set DNS result order:', e?.message || e);
+}
 
 // --- Channel IDs ---
 // Trigger channel = gv-general (bot listens here for slurs, off-topic, religion/politics, Soon).
@@ -1605,6 +1614,9 @@ client.on('error', (err) => {
 client.on('warn', (info) => {
   console.warn('Discord client warn:', info);
 });
+client.on('debug', (info) => {
+  console.log('Discord debug:', info);
+});
 client.on('shardReady', (id) => {
   console.log(`Discord shard ${id} ready`);
 });
@@ -1616,6 +1628,15 @@ client.on('shardDisconnect', (event, id) => {
 });
 client.on('shardReconnecting', (id) => {
   console.warn(`Discord shard ${id} reconnecting...`);
+});
+process.on('exit', (code) => {
+  console.log(`Process exit: code=${code}`);
+});
+process.on('SIGTERM', () => {
+  console.warn('Received SIGTERM');
+});
+process.on('SIGINT', () => {
+  console.warn('Received SIGINT');
 });
 
 // --- Start bot ---
@@ -1629,21 +1650,31 @@ console.log('Attempting Discord login...');
 setInterval(() => {
   const mu = process.memoryUsage();
   const mb = (n) => Math.round((n / 1024 / 1024) * 10) / 10;
-  console.log(`[hb] uptime=${Math.round(process.uptime())}s rss=${mb(mu.rss)}MB heapUsed=${mb(mu.heapUsed)}MB`);
-}, 30000).unref?.();
+  console.log(`[hb] pid=${process.pid} uptime=${Math.round(process.uptime())}s rss=${mb(mu.rss)}MB heapUsed=${mb(mu.heapUsed)}MB`);
+}, 5000);
+const LOGIN_READY_TIMEOUT_MS = Math.max(15000, parseInt(process.env.LOGIN_READY_TIMEOUT_MS || '60000', 10));
+const loginWatchdog = setTimeout(() => {
+  if (!client.isReady()) {
+    console.error(`Discord login watchdog: not ready after ${LOGIN_READY_TIMEOUT_MS}ms, exiting for clean restart`);
+    process.exit(1);
+  }
+}, LOGIN_READY_TIMEOUT_MS);
 
 try {
   const p = client.login(BOT_TOKEN);
   Promise.resolve(p)
     .then(() => {
       // login() resolves after ready in discord.js; keep a log here so Render shows it conclusively.
+      clearTimeout(loginWatchdog);
       console.log('Discord login ok (ready).');
     })
     .catch((err) => {
+      clearTimeout(loginWatchdog);
       console.error('Discord login failed:', err?.message || err);
       process.exit(1);
     });
 } catch (err) {
+  clearTimeout(loginWatchdog);
   console.error('Discord login threw synchronously:', err?.message || err);
   process.exit(1);
 }
