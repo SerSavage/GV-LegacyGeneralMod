@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, Options } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -1218,6 +1218,17 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  // Prevent OOM on Render by limiting per-guild member caching.
+  // discord.js can otherwise cache the full guild member list on connect.
+  makeCache: Options.cacheWithLimits({
+    ...Options.DefaultMakeCacheSettings,
+    GuildMemberManager: {
+      // Render free tier can OOM if the bot caches too many members.
+      // Keep this low; can override with GUILD_MEMBER_CACHE_MAX_SIZE if needed.
+      maxSize: Math.max(1, parseInt(process.env.GUILD_MEMBER_CACHE_MAX_SIZE || '25', 10)),
+      keepOverLimit: (member) => member.id === member.client.user.id, // always keep the bot's own member
+    },
+  }),
 });
 
 client.once('clientReady', () => {
