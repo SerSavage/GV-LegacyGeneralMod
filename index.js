@@ -1624,36 +1624,13 @@ if (!DISCORD_TOKEN) {
   process.exit(1);
 }
 const BOT_TOKEN = String(DISCORD_TOKEN).trim();
-async function verifyDiscordToken(token) {
-  try {
-    const res = await fetch('https://discord.com/api/v10/users/@me', {
-      headers: { Authorization: `Bot ${token}` },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status} ${body}`.trim());
-    }
-    const me = await res.json();
-    console.log(`Discord token preflight OK for ${me.username}#${me.discriminator} (${me.id})`);
-    return true;
-  } catch (err) {
-    console.error('Discord token preflight failed:', err.message || err);
-    return false;
-  }
-}
-
-(async () => {
-  const tokenOk = await verifyDiscordToken(BOT_TOKEN);
-  if (!tokenOk) process.exit(1);
-  console.log('Attempting Discord login...');
-  client.login(BOT_TOKEN)
-    .then(() => {
-      // login() resolves after ready in discord.js; keep a log here so Render shows it conclusively.
-      console.log('Discord login ok (ready).');
-    })
-    .catch((err) => {
-      console.error('Discord login failed:', err.message || err);
-      process.exit(1);
-    });
-})();
+console.log('Attempting Discord login...');
+client.login(BOT_TOKEN)
+  .then(() => {
+    // login() resolves after ready in discord.js; keep a log here so Render shows it conclusively.
+    console.log('Discord login ok (ready).');
+  })
+  .catch((err) => {
+    console.error('Discord login failed:', err.message || err);
+    process.exit(1);
+  });
