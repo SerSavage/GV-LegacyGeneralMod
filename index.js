@@ -1224,8 +1224,8 @@ const client = new Client({
     ...Options.DefaultMakeCacheSettings,
     GuildMemberManager: {
       // Render free tier can OOM if the bot caches too many members.
-      // Keep this low; can override with GUILD_MEMBER_CACHE_MAX_SIZE if needed.
-      maxSize: Math.max(1, parseInt(process.env.GUILD_MEMBER_CACHE_MAX_SIZE || '25', 10)),
+      // Keep this very low; can override with GUILD_MEMBER_CACHE_MAX_SIZE if needed.
+      maxSize: Math.max(1, parseInt(process.env.GUILD_MEMBER_CACHE_MAX_SIZE || '5', 10)),
       keepOverLimit: (member) => member.id === member.client.user.id, // always keep the bot's own member
     },
   }),
