@@ -123,13 +123,30 @@ function replaceIsraelFlagWithPalestine(text) {
     .replace(FLAG_IL_TEXT_RE, FLAG_PS_REPLACEMENT)
     .replace(FLAG_IL_CUSTOM_RE, FLAG_PS_REPLACEMENT);
 }
-// Images for "Chronicus Generalium" reply in gv-general when user is moved to off-topic — one picked at random (not used for Soon)
-const CHRONICUS_MEME_PATHS = [
-  path.join(process.cwd(), 'assets', 'memes', 'v11.png'),
-  path.join(process.cwd(), 'assets', 'memes', 'file_00000000fb88720a807a57aff20e418a.png'),
-];
+// Soon-only memes (gv-general :soon: + image reply). Off-topic / Chronicus uses everything else under assets/memes.
+const MEMES_DIR = path.join(process.cwd(), 'assets', 'memes');
+const SOON_MEME_BASENAMES = new Set([
+  'IMG_5346.png',
+  'letmein.jpg',
+  'soon_rdt.jpg',
+  'file_000000006138720aa48dcc9d3d67b177.png',
+  'file_000000003ff87246a4a7611f400bbdd8.png',
+]);
+function listChronicusMemePathsFromAssets() {
+  try {
+    if (!fs.existsSync(MEMES_DIR)) return [];
+    const exts = /\.(png|jpe?g|gif|webp)$/i;
+    return fs.readdirSync(MEMES_DIR)
+      .filter((name) => exts.test(name) && !SOON_MEME_BASENAMES.has(name))
+      .map((name) => path.join(MEMES_DIR, name));
+  } catch {
+    return [];
+  }
+}
+const CHRONICUS_MEME_PATHS = listChronicusMemePathsFromAssets();
+console.log(`Chronicus/off-topic memes (assets/memes, excluding Soon set): ${CHRONICUS_MEME_PATHS.length}`);
 function getRandomChronicusMeme() {
-  const existing = CHRONICUS_MEME_PATHS.filter(p => fs.existsSync(p));
+  const existing = CHRONICUS_MEME_PATHS.filter((p) => fs.existsSync(p));
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
 }
 /** Chronicus body — channel link is also on the line above (see deleteInGeneralAndForwardMovedHold). */
@@ -137,29 +154,11 @@ function getChronicusAnnouncementText() {
   return `**Chronicus Generalium**\n\n***A long-lasting condition marked by the inability to locate the Off-Topic scrolls and a mystical attraction to gv-general.***`;
 }
 
-// Images for Soon trigger only (game/servers/ETA questions): when can we play, is the game up, any eta, etc. — one picked at random, posted with :soon: reaction
-const SOON_MEME_PATHS = [
-  path.join(process.cwd(), 'assets', 'memes', 'file_000000001b3471fbbf4e0eb00f4c1467.png'),
-  path.join(process.cwd(), 'assets', 'memes', 'file_000000003ff87246a4a7611f400bbdd8.png'),
-  path.join(process.cwd(), 'assets', 'memes', 'file_000000006138720aa48dcc9d3d67b177.png'),
-  path.join(process.cwd(), 'assets', 'memes', 'soon_rdt.jpg'),
-  path.join(process.cwd(), 'assets', 'memes', 'letmein.jpg'),
-  path.join(process.cwd(), 'assets', 'memes', 'IMG_5346.png'),
-];
+// Images for Soon trigger only — exactly these repo files (random pick), attached with :soon: reaction
+const SOON_MEME_PATHS = [...SOON_MEME_BASENAMES].map((name) => path.join(MEMES_DIR, name));
 function getRandomSoonMeme() {
-  const existing = SOON_MEME_PATHS.filter(p => fs.existsSync(p));
+  const existing = SOON_MEME_PATHS.filter((p) => fs.existsSync(p));
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
-}
-// GIFs for Soon trigger (game/servers up questions) – one picked at random, Discord embeds the link
-const SOON_GIFS = [
-  'https://tenor.com/view/history-of-the-world-move-move-along-go-away-move-it-along-gif-12125287933846122147',
-  'https://tenor.com/view/get-over-it-gary-marshall-borders-sistas-s6e12-move-on-gif-1883620024651432269',
-  'https://tenor.com/view/all-right-lets-go-sgt-bull-wheatley-them-lets-move-come-on-gif-21089700',
-  'https://tenor.com/view/take-your-time-cat-nile-pile-manicure-bored-gif-1146754972652164095',
-  'https://tenor.com/view/days-of-our-lives-dool-gabi-hernandez-dimera-move-on-already-camila-banus-gif-19360973',
-];
-function getRandomSoonGif() {
-  return SOON_GIFS[Math.floor(Math.random() * SOON_GIFS.length)];
 }
 
 // "Soon" reaction: when someone asks about game/servers/ETA, bot reacts with this custom emoji (gv-general only)
@@ -352,6 +351,11 @@ function buildSoonTriggerPhrases() {
     'it not letting me', 'its not letting me', "it's not letting me", 'not letting me', 'wont let me', "won't let me",
     'steam not working', 'steam doesnt work', "steam doesn't work", 'cant get in the game', "can't get in the game",
     'how to play', 'how do i play', 'how can i play', 'where do i download', 'where to download', 'how to download',
+    // Community testing / playtest duration (e.g. "estimated end date for this community testing phase")
+    'community testing', 'community test', 'testing phase', 'test phase', 'playtest', 'play test', 'playtest phase',
+    'estimated end date', 'end date for', 'specific duration', 'how long will this', 'how long is the test',
+    'how long is testing', 'when does testing end', 'when will testing end', 'when does the test end',
+    'duration of the', 'length of the test', 'testing last', 'test last until',
   ].forEach(add);
 
   return [...phrases];
@@ -409,6 +413,10 @@ const SOON_IMAGE_PHRASES = [
   'it not letting me', 'its not letting me', "it's not letting me", 'not letting me', 'wont let me', "won't let me",
   'steam not working', 'steam doesnt work', "steam doesn't work", 'cant get in the game', "can't get in the game",
   'how to play', 'how do i play', 'how can i play', 'where do i download', 'where to download', 'how to download',
+  'community testing', 'community test', 'testing phase', 'test phase', 'playtest', 'play test', 'playtest phase',
+  'estimated end date', 'end date for', 'specific duration', 'how long will this', 'how long is the test',
+  'how long is testing', 'when does testing end', 'when will testing end', 'when does the test end',
+  'duration of the', 'length of the test', 'testing last', 'test last until',
 ];
 function hasSoonTriggerWithImage(text) {
   if (!text || typeof text !== 'string') return false;
@@ -821,7 +829,8 @@ const IDEOLOGICAL_TERMS = new Set([
   'fascism', 'fascist', 'fascists', 'nazism', 'nazi', 'nazis', 'neo-nazi', 'neo-nazis', 'neonazi', 'neonazis',
   'supremacist', 'supremacism', 'white supremacy', 'white supremacist', 'ethnonationalism', 'nativism', 'nativist',
   'xenophobia', 'xenophobic', 'authoritarianism', 'authoritarian', 'ultranationalism', 'reactionary',
-  'redpilled', 'redpill', 'bluepilled', 'bluepill', 'blackpilled', 'blackpill', 'based', 'woke', 'libtard',
+  'redpilled', 'redpill', 'bluepilled', 'bluepill', 'blackpilled', 'blackpill', 'woke', 'libtard',
+  // note: 'based' omitted — common slang; phrase triggers like "muslims is based" stay in RELIGION_POLITICS_PHRASES
   'antifa', 'boogaloo', 'white privilege', 'race-baiting', 'big lie', 'conspiracy theorist', 'freethinker',
   'gerrymandering', 'globalist', 'globalism', 'illiberal', 'illiberalism', 'identity politics',
   'cultural marxism', 'cultural marxist', 'critical theory', 'postmodern', 'postmodernism',
@@ -1517,10 +1526,16 @@ client.on('messageCreate', async (message) => {
     }
     if (hasSoonTriggerWithImage(message.content)) {
       try {
-        // Reply with a random Soon GIF (Discord embeds it); fallback to meme image if desired
-        await message.reply({ content: getRandomSoonGif() });
+        const soonPath = getRandomSoonMeme();
+        if (soonPath) {
+          await message.reply({
+            files: [{ attachment: soonPath, name: path.basename(soonPath) }],
+          });
+        } else if (DEBUG) {
+          console.warn('[soon] No Soon meme files found under assets/memes (expected 5 Soon-only files)');
+        }
       } catch (err) {
-        console.error('Soon GIF reply failed:', err.message);
+        console.error('Soon meme reply failed:', err.message);
       }
     }
     return;
