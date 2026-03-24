@@ -1135,7 +1135,6 @@ function loadSpamWatchState() {
       if (data && (Array.isArray(data.strikeTimes) || typeof data.strikes === 'number')) {
         return {
           strikeTimes: Array.isArray(data.strikeTimes) ? data.strikeTimes : [],
-          lastDmAt: typeof data.lastDmAt === 'number' ? data.lastDmAt : 0,
           contentCounts: data.contentCounts && typeof data.contentCounts === 'object' ? data.contentCounts : {},
           recentMessageTimes: Array.isArray(data.recentMessageTimes) ? data.recentMessageTimes : [],
         };
@@ -1144,7 +1143,7 @@ function loadSpamWatchState() {
   } catch (e) {
     console.warn('spam-watch load failed:', e.message);
   }
-  return { strikeTimes: [], lastDmAt: 0, contentCounts: {}, recentMessageTimes: [] };
+  return { strikeTimes: [], contentCounts: {}, recentMessageTimes: [] };
 }
 
 function saveSpamWatchState(state) {
@@ -1252,13 +1251,9 @@ async function handleSpamWatchUser(message) {
         ].join('\n');
     try {
       await message.author.send({ content: dmBody });
-      state.lastDmAt = now;
-      saveSpamWatchState(state);
     } catch (e) {
       if (DEBUG) console.warn('[spam-watch] DM failed:', e.message);
       await sendSpamWatchMiaowDmFallback(message.client);
-      state.lastDmAt = now;
-      saveSpamWatchState(state);
     }
   }
 
