@@ -1098,12 +1098,17 @@ function isExcludedFromDeleteAndMeme(message) {
   return /savage|unban/.test(name);
 }
 
-// gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect; DM after >10 strikes; if DM fails, ping in #miaow (French).
+// gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect;
+// DM (French) when ≥10 strikes in 5 min OR ≥50 strikes in 1 h; if DM fails, ping in #miaow (French).
 const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
 const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
 const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
 const SPAM_WATCH_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_VOLUME_WINDOW_MS || String(60 * 60 * 1000), 10)); // default 1h
 const SPAM_WATCH_CONTENT_COUNT_MAX_KEYS = 120;
+const SPAM_WATCH_DM_WINDOW_5MIN_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_DM_WINDOW_5MIN_MS || String(5 * 60 * 1000), 10));
+const SPAM_WATCH_DM_WINDOW_1H_MS = Math.max(5 * 60_000, parseInt(process.env.SPAM_WATCH_DM_WINDOW_1H_MS || String(60 * 60 * 1000), 10));
+const SPAM_WATCH_DM_THRESHOLD_5MIN = Math.max(1, parseInt(process.env.SPAM_WATCH_DM_THRESHOLD_5MIN || '10', 10));
+const SPAM_WATCH_DM_THRESHOLD_1H = Math.max(1, parseInt(process.env.SPAM_WATCH_DM_THRESHOLD_1H || '50', 10));
 
 function normalizeSpamContent(text) {
   return String(text || '')
@@ -1127,10 +1132,10 @@ function loadSpamWatchState() {
   try {
     if (fs.existsSync(SPAM_WATCH_STRIKES_FILE)) {
       const data = JSON.parse(fs.readFileSync(SPAM_WATCH_STRIKES_FILE, 'utf8'));
-      if (data && typeof data.strikes === 'number') {
+      if (data && (Array.isArray(data.strikeTimes) || typeof data.strikes === 'number')) {
         return {
-          strikes: data.strikes,
-          dmSent: !!data.dmSent,
+          strikeTimes: Array.isArray(data.strikeTimes) ? data.strikeTimes : [],
+          lastDmAt: typeof data.lastDmAt === 'number' ? data.lastDmAt : 0,
           contentCounts: data.contentCounts && typeof data.contentCounts === 'object' ? data.contentCounts : {},
           recentMessageTimes: Array.isArray(data.recentMessageTimes) ? data.recentMessageTimes : [],
         };
@@ -1139,7 +1144,7 @@ function loadSpamWatchState() {
   } catch (e) {
     console.warn('spam-watch load failed:', e.message);
   }
-  return { strikes: 0, dmSent: false, contentCounts: {}, recentMessageTimes: [] };
+  return { strikeTimes: [], lastDmAt: 0, contentCounts: {}, recentMessageTimes: [] };
 }
 
 function saveSpamWatchState(state) {
@@ -1205,7 +1210,17 @@ async function handleSpamWatchUser(message) {
     return false;
   }
 
-  state.strikes += 1;
+  state.strikeTimes = (state.strikeTimes || []).filter((t) => now - t < SPAM_WATCH_DM_WINDOW_1H_MS);
+  const before5 = state.strikeTimes.filter((t) => now - t <= SPAM_WATCH_DM_WINDOW_5MIN_MS).length;
+  const before1h = state.strikeTimes.length;
+  state.strikeTimes.push(now);
+  const after5 = state.strikeTimes.filter((t) => now - t <= SPAM_WATCH_DM_WINDOW_5MIN_MS).length;
+  const after1h = state.strikeTimes.length;
+
+  const crossDm5 = before5 < SPAM_WATCH_DM_THRESHOLD_5MIN && after5 >= SPAM_WATCH_DM_THRESHOLD_5MIN;
+  const crossDm1h = before1h < SPAM_WATCH_DM_THRESHOLD_1H && after1h >= SPAM_WATCH_DM_THRESHOLD_1H;
+  const shouldTryDm = crossDm5 || crossDm1h;
+
   saveSpamWatchState(state);
 
   const why = [];
@@ -1225,23 +1240,33 @@ async function handleSpamWatchUser(message) {
     console.error('spam-watch reply failed:', e.message);
   }
 
-  if (state.strikes > 10 && !state.dmSent) {
+  if (shouldTryDm) {
+    const dmBody = crossDm5
+      ? [
+          `Tu as atteint **${SPAM_WATCH_DM_THRESHOLD_5MIN}** réponses spam en moins de **5 minutes** depuis <#${TRIGGER_CHANNEL_ID}>.`,
+          `Passe sur <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> ou <#${REDIRECT_CHANNEL_ID}>.`,
+        ].join('\n')
+      : [
+          `Tu as atteint **${SPAM_WATCH_DM_THRESHOLD_1H}** réponses spam en **1 heure** depuis <#${TRIGGER_CHANNEL_ID}>.`,
+          `Passe sur <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> ou <#${REDIRECT_CHANNEL_ID}>.`,
+        ].join('\n');
     try {
-      await message.author.send({
-        content: [
-          `Tu as été redirigé souvent depuis <#${TRIGGER_CHANNEL_ID}>.`,
-          `Continue sur <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> ou <#${REDIRECT_CHANNEL_ID}>.`,
-        ].join('\n'),
-      });
-      state.dmSent = true;
+      await message.author.send({ content: dmBody });
+      state.lastDmAt = now;
       saveSpamWatchState(state);
     } catch (e) {
       if (DEBUG) console.warn('[spam-watch] DM failed:', e.message);
       await sendSpamWatchMiaowDmFallback(message.client);
+      state.lastDmAt = now;
+      saveSpamWatchState(state);
     }
   }
 
-  if (DEBUG) console.log(`[spam-watch] strike ${state.strikes} for ${message.author.tag} same=${sameTextSpam} vol=${volumeSpam} wall=${wallSpam}`);
+  if (DEBUG) {
+    console.log(
+      `[spam-watch] strikes 5min=${after5} 1h=${after1h} for ${message.author.tag} same=${sameTextSpam} vol=${volumeSpam} wall=${wallSpam}`,
+    );
+  }
   return true;
 }
 
