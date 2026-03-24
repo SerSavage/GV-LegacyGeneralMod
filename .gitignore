@@ -3,3 +3,4 @@ node_modules/
 *.log
 rss-seen.json
 welcome-once-ever.json
+spam-watch-strikes.json

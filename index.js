@@ -829,8 +829,8 @@ const IDEOLOGICAL_TERMS = new Set([
   'fascism', 'fascist', 'fascists', 'nazism', 'nazi', 'nazis', 'neo-nazi', 'neo-nazis', 'neonazi', 'neonazis',
   'supremacist', 'supremacism', 'white supremacy', 'white supremacist', 'ethnonationalism', 'nativism', 'nativist',
   'xenophobia', 'xenophobic', 'authoritarianism', 'authoritarian', 'ultranationalism', 'reactionary',
-  'redpilled', 'redpill', 'bluepilled', 'bluepill', 'blackpilled', 'blackpill', 'woke', 'libtard',
-  // note: 'based' omitted — common slang; phrase triggers like "muslims is based" stay in RELIGION_POLITICS_PHRASES
+  'redpilled', 'redpill', 'bluepilled', 'bluepill', 'blackpilled', 'blackpill', 'libtard',
+  // 'based' / 'woke' omitted — common slang; false positives on "woke up the cat", etc.
   'antifa', 'boogaloo', 'white privilege', 'race-baiting', 'big lie', 'conspiracy theorist', 'freethinker',
   'gerrymandering', 'globalist', 'globalism', 'illiberal', 'illiberalism', 'identity politics',
   'cultural marxism', 'cultural marxist', 'critical theory', 'postmodern', 'postmodernism',
@@ -1096,6 +1096,103 @@ function isExcludedFromDeleteAndMeme(message) {
     message.member?.displayName,
   ].filter(Boolean).join(' ').toLowerCase();
   return /savage|unban/.test(name);
+}
+
+// gv-general only: watch one user for duplicate / copy-paste wall spam → soft redirect (no delete); DM after >10 strikes (persisted).
+const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
+const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
+const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
+
+function normalizeSpamContent(text) {
+  return String(text || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/** Same block repeated 3+ times in one message (with or without spaces between copies). */
+function looksLikeInMessageRepeatSpam(text) {
+  const raw = String(text || '');
+  if (raw.length < 36) return false;
+  const compact = raw.toLowerCase().replace(/\s+/g, '');
+  if (compact.length >= 30 && /(.{12,100})(\1){2,}/.test(compact)) return true;
+  const spaced = normalizeSpamContent(raw);
+  if (spaced.length >= 30 && /(.{15,80})(\1){2,}/.test(spaced)) return true;
+  return false;
+}
+
+function loadSpamWatchState() {
+  try {
+    if (fs.existsSync(SPAM_WATCH_STRIKES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SPAM_WATCH_STRIKES_FILE, 'utf8'));
+      if (data && typeof data.strikes === 'number') {
+        return {
+          strikes: data.strikes,
+          dmSent: !!data.dmSent,
+          lastNormalized: data.lastNormalized || null,
+        };
+      }
+    }
+  } catch (e) {
+    console.warn('spam-watch load failed:', e.message);
+  }
+  return { strikes: 0, dmSent: false, lastNormalized: null };
+}
+
+function saveSpamWatchState(state) {
+  try {
+    fs.writeFileSync(SPAM_WATCH_STRIKES_FILE, JSON.stringify(state), 'utf8');
+  } catch (e) {
+    console.error('spam-watch save failed:', e.message);
+  }
+}
+
+/** @returns {Promise<boolean>} true if handled (caller should return) */
+async function handleSpamWatchUser(message) {
+  if (String(message.author.id) !== SPAM_WATCH_USER_ID) return false;
+  const norm = normalizeSpamContent(message.content);
+  if (!norm) return false;
+
+  const state = loadSpamWatchState();
+  const repeatedWall = looksLikeInMessageRepeatSpam(message.content);
+  const consecutiveDuplicate = state.lastNormalized != null && norm === state.lastNormalized;
+  const isSpam = repeatedWall || consecutiveDuplicate;
+
+  state.lastNormalized = norm;
+
+  if (!isSpam) {
+    saveSpamWatchState(state);
+    return false;
+  }
+
+  state.strikes += 1;
+  saveSpamWatchState(state);
+
+  try {
+    await message.reply({
+      content: [
+        `${message.author} Please don’t repeat the same post in <#${TRIGGER_CHANNEL_ID}>.`,
+        `Use <#${REDIRECT_CHANNEL_ID}> or <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> instead.`,
+      ].join('\n'),
+    });
+  } catch (e) {
+    console.error('spam-watch reply failed:', e.message);
+  }
+
+  if (state.strikes > 10 && !state.dmSent) {
+    try {
+      await message.author.send({
+        content: `You’ve been redirected many times for repeating posts in <#${TRIGGER_CHANNEL_ID}>. Please keep that to <#${REDIRECT_CHANNEL_ID}> or <#${SPAM_WATCH_MIAOW_CHANNEL_ID}>.`,
+      });
+      state.dmSent = true;
+      saveSpamWatchState(state);
+    } catch (e) {
+      if (DEBUG) console.warn('[spam-watch] DM failed (likely closed DMs):', e.message);
+    }
+  }
+
+  if (DEBUG) console.log(`[spam-watch] strike ${state.strikes} for ${message.author.tag} (wall=${repeatedWall} dup=${consecutiveDuplicate})`);
+  return true;
 }
 
 // Delete message in gv-general, repost to MOVED_BY_BOT_CHANNEL (hold/archive), still tell user to continue in #off-topic; then Chronicus in gv-general links off-topic
@@ -1465,6 +1562,8 @@ client.on('messageCreate', async (message) => {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
     return;
   }
+
+  if (await handleSpamWatchUser(message)) return;
 
   // Monkey-emoji / moderation trope OR in-game “monkey noises” comms culture: react only, do not return
   if (hasMonkeyModerationTrope(message.content) || hasMonkeyNoisesCultureTrope(message.content)) {
