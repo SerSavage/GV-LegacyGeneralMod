@@ -1098,10 +1098,12 @@ function isExcludedFromDeleteAndMeme(message) {
   return /savage|unban/.test(name);
 }
 
-// gv-general only: watch one user for duplicate / copy-paste wall spam → soft redirect (no delete); DM after >10 strikes (persisted).
+// gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect; DM after >10 strikes; if DM fails, ping in #miaow (French).
 const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
 const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
 const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
+const SPAM_WATCH_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_VOLUME_WINDOW_MS || String(60 * 60 * 1000), 10)); // default 1h
+const SPAM_WATCH_CONTENT_COUNT_MAX_KEYS = 120;
 
 function normalizeSpamContent(text) {
   return String(text || '')
@@ -1129,14 +1131,15 @@ function loadSpamWatchState() {
         return {
           strikes: data.strikes,
           dmSent: !!data.dmSent,
-          lastNormalized: data.lastNormalized || null,
+          contentCounts: data.contentCounts && typeof data.contentCounts === 'object' ? data.contentCounts : {},
+          recentMessageTimes: Array.isArray(data.recentMessageTimes) ? data.recentMessageTimes : [],
         };
       }
     }
   } catch (e) {
     console.warn('spam-watch load failed:', e.message);
   }
-  return { strikes: 0, dmSent: false, lastNormalized: null };
+  return { strikes: 0, dmSent: false, contentCounts: {}, recentMessageTimes: [] };
 }
 
 function saveSpamWatchState(state) {
@@ -1147,18 +1150,55 @@ function saveSpamWatchState(state) {
   }
 }
 
+function spamContentKey(norm) {
+  const s = norm.slice(0, 500);
+  return s.length < norm.length ? `${s}…` : s;
+}
+
+function pruneSpamContentCounts(counts) {
+  const keys = Object.keys(counts);
+  if (keys.length <= SPAM_WATCH_CONTENT_COUNT_MAX_KEYS) return counts;
+  const sorted = [...keys].sort((a, b) => (counts[a] || 0) - (counts[b] || 0));
+  const next = { ...counts };
+  for (let i = 0; i < keys.length - SPAM_WATCH_CONTENT_COUNT_MAX_KEYS; i++) {
+    delete next[sorted[i]];
+  }
+  return next;
+}
+
+async function sendSpamWatchMiaowDmFallback(client) {
+  const french = [
+    `<@${SPAM_WATCH_USER_ID}> — je n’ai pas pu t’envoyer de message privé (DM fermés ou bloqués).`,
+    `Merci de continuer ce genre de messages ici : <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> — pas dans <#${TRIGGER_CHANNEL_ID}>.`,
+    `Le salon **miaow** est fait pour ça ; gv-general n’est pas un mur de spam.`,
+  ].join('\n');
+  try {
+    const ch = await client.channels.fetch(SPAM_WATCH_MIAOW_CHANNEL_ID);
+    if (ch?.isTextBased()) await ch.send({ content: french });
+  } catch (e) {
+    console.error('spam-watch miaow fallback channel failed:', e.message);
+  }
+}
+
 /** @returns {Promise<boolean>} true if handled (caller should return) */
 async function handleSpamWatchUser(message) {
   if (String(message.author.id) !== SPAM_WATCH_USER_ID) return false;
   const norm = normalizeSpamContent(message.content);
   if (!norm) return false;
 
+  const now = Date.now();
   const state = loadSpamWatchState();
-  const repeatedWall = looksLikeInMessageRepeatSpam(message.content);
-  const consecutiveDuplicate = state.lastNormalized != null && norm === state.lastNormalized;
-  const isSpam = repeatedWall || consecutiveDuplicate;
+  state.recentMessageTimes = (state.recentMessageTimes || []).filter((t) => now - t < SPAM_WATCH_VOLUME_WINDOW_MS);
+  state.recentMessageTimes.push(now);
 
-  state.lastNormalized = norm;
+  const key = spamContentKey(norm);
+  state.contentCounts = pruneSpamContentCounts(state.contentCounts || {});
+  state.contentCounts[key] = (state.contentCounts[key] || 0) + 1;
+
+  const sameTextSpam = state.contentCounts[key] >= 3;
+  const volumeSpam = state.recentMessageTimes.length > 10;
+  const wallSpam = looksLikeInMessageRepeatSpam(message.content);
+  const isSpam = sameTextSpam || volumeSpam || wallSpam;
 
   if (!isSpam) {
     saveSpamWatchState(state);
@@ -1168,11 +1208,17 @@ async function handleSpamWatchUser(message) {
   state.strikes += 1;
   saveSpamWatchState(state);
 
+  const why = [];
+  if (sameTextSpam) why.push('même texte ≥3×');
+  if (volumeSpam) why.push(`>10 messages en ${Math.round(SPAM_WATCH_VOLUME_WINDOW_MS / 60000)} min`);
+  if (wallSpam) why.push('copier-coller répété');
+
   try {
     await message.reply({
       content: [
-        `${message.author} Please don’t repeat the same post in <#${TRIGGER_CHANNEL_ID}>.`,
-        `Use <#${REDIRECT_CHANNEL_ID}> or <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> instead.`,
+        `${message.author} — Merci de ne pas spammer <#${TRIGGER_CHANNEL_ID}>.`,
+        `Va plutôt sur <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> (ou <#${REDIRECT_CHANNEL_ID}>).`,
+        `(${why.join(' · ')})`,
       ].join('\n'),
     });
   } catch (e) {
@@ -1182,16 +1228,20 @@ async function handleSpamWatchUser(message) {
   if (state.strikes > 10 && !state.dmSent) {
     try {
       await message.author.send({
-        content: `You’ve been redirected many times for repeating posts in <#${TRIGGER_CHANNEL_ID}>. Please keep that to <#${REDIRECT_CHANNEL_ID}> or <#${SPAM_WATCH_MIAOW_CHANNEL_ID}>.`,
+        content: [
+          `Tu as été redirigé souvent depuis <#${TRIGGER_CHANNEL_ID}>.`,
+          `Continue sur <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> ou <#${REDIRECT_CHANNEL_ID}>.`,
+        ].join('\n'),
       });
       state.dmSent = true;
       saveSpamWatchState(state);
     } catch (e) {
-      if (DEBUG) console.warn('[spam-watch] DM failed (likely closed DMs):', e.message);
+      if (DEBUG) console.warn('[spam-watch] DM failed:', e.message);
+      await sendSpamWatchMiaowDmFallback(message.client);
     }
   }
 
-  if (DEBUG) console.log(`[spam-watch] strike ${state.strikes} for ${message.author.tag} (wall=${repeatedWall} dup=${consecutiveDuplicate})`);
+  if (DEBUG) console.log(`[spam-watch] strike ${state.strikes} for ${message.author.tag} same=${sameTextSpam} vol=${volumeSpam} wall=${wallSpam}`);
   return true;
 }
 
