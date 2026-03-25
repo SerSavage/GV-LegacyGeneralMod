@@ -467,6 +467,8 @@ const SAFE_CONTEXT_BASE = [
   'forefather', 'greatfather', 'khagan', 'zenith',
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
   'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
+  // Store/platform + game discussion so real-world politics triggers don't fire on game-related posts.
+  'steam', 'mortal online',
   'geliand', 'hillead', 'infidels', 'island', 'fashion', 'chests', 'titles', 'interfaces', 'map',
   'log in', 'login', 'log in.', 'can\'t log in', 'cant log in', // game/server – avoid triggering on "I can't log in"
   'in-game', 'ingame', // "genocide a nation in-game" = game talk, don't trigger
@@ -748,14 +750,27 @@ function hasMedicalPsychiatricInsult(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
   const normalized = normalizeForMatch(lower);
+
+  // Many users use "retarded" as a casual "broken/buggy" adjective for game issues.
+  // If the post is clearly game/platform context, don't treat "retarded"/"retard" as a medical slur.
+  const looksGameLikeForRetard =
+    /\b(steam|mortal online|gloria victis|in[- ]game|ingame|mmorpg|looting?|loot)\b/.test(lower)
+    || /\bbug(s)?\b/.test(lower);
+
   for (const sub of MEDICAL_PSYCH_INSULT_SUBSTRINGS) {
-    if (lower.includes(sub)) return true;
+    if (lower.includes(sub)) {
+      if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
+      return true;
+    }
     const subNorm = normalizeForMatch(sub);
-    if (subNorm.length >= 3 && normalized.includes(subNorm)) return true;
+    if (subNorm.length >= 3 && normalized.includes(subNorm)) {
+      if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
+      return true;
+    }
   }
   return false;
 }
-console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (off-topic, bypasses safe-context).`);
+console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (some "retarded" uses ignored in game context).`);
 
 // Real-world geopolitical keywords (POLITICAL_EXTRA-style + close variants). Runs BEFORE safe-context so "guilds + NATO" still → #off-topic (random GIF, same as religion/politics).
 const GEOPOLITICAL_HARD_SUBSTRINGS = [
