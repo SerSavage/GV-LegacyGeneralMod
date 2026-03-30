@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Options } = require('discord.js');
+const { Client, GatewayIntentBits, Options, Partials } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -29,6 +29,10 @@ const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
 // Bot-moved gv-general posts land here so #off-topic chat flow stays clean; message body still tells users to use off-topic
 const MOVED_BY_BOT_CHANNEL_ID = String(process.env.MOVED_BY_BOT_CHANNEL_ID || '1485211311070511225');
+// Severe CSAM/grooming-related text in gv-general → same hold channel + TMFIAR + mandatory ✅ from author (no Savage/unban bypass).
+const CSAM_GROOMING_WORDS_FILE = process.env.CSAM_GROOMING_WORDS_FILE || path.join(process.cwd(), 'assets', 'csam-grooming-triggers.txt');
+const CSAM_ACK_EMOJI = '✅';
+const CSAM_ACK_COLLECTOR_MS = 7 * 24 * 60 * 60 * 1000; // wait up to 7 days for first ✅ from author
 // User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
 // User ID whose media (GIFs, images, videos, tenor.com links) with religious/political content in the message text get moved to #off-topic
@@ -1093,6 +1097,129 @@ function getSpamVideoPayload() {
   return { content: '(Video not configured: set VIDEO_PATH or VIDEO_URL, or add assets/TMFIAR.mp4)' };
 }
 
+function loadCsamGroomingTriggerLines() {
+  try {
+    const fp = CSAM_GROOMING_WORDS_FILE;
+    if (!fs.existsSync(fp)) {
+      console.warn(`[csam-triggers] File not found: ${fp}`);
+      return [];
+    }
+    const raw = fs.readFileSync(fp, 'utf8');
+    return raw
+      .split(/\r?\n/)
+      .map((l) => {
+        const i = l.indexOf('#');
+        const line = (i >= 0 ? l.slice(0, i) : l).trim().toLowerCase();
+        return line;
+      })
+      .filter(Boolean);
+  } catch (e) {
+    console.error('[csam-triggers] Load failed:', e.message);
+    return [];
+  }
+}
+const csamGroomingTriggers = loadCsamGroomingTriggerLines();
+console.log(`[csam-triggers] Loaded ${csamGroomingTriggers.length} lines from ${CSAM_GROOMING_WORDS_FILE}`);
+
+/** Phrases (space/hyphen) use substring + normalized match; single tokens use word boundaries to cut false positives. */
+function hasCsamGroomingTrigger(text) {
+  if (!text || typeof text !== 'string') return false;
+  const cleaned = stripEmojis(text);
+  if (!cleaned) return false;
+  const lower = cleaned.toLowerCase();
+  const normalized = normalizeForMatch(lower);
+  for (const term of csamGroomingTriggers) {
+    if (!term) continue;
+    if (term.includes(' ') || term.includes('-')) {
+      const tn = normalizeForMatch(term);
+      if (lower.includes(term) || normalized.includes(tn)) return true;
+      continue;
+    }
+    const re = new RegExp(`\\b${escapeRegex(term)}\\b`, 'i');
+    if (re.test(lower)) return true;
+    const tn = normalizeForMatch(term);
+    if (tn !== term) {
+      const reN = new RegExp(`\\b${escapeRegex(tn)}\\b`, 'i');
+      if (reN.test(normalized)) return true;
+    }
+  }
+  return false;
+}
+
+function getMessageTextForCsamScan(message) {
+  let t = message.content ? String(message.content) : '';
+  if (message.attachments?.size) {
+    for (const a of message.attachments.values()) {
+      if (a.name) t += ` ${a.name}`;
+    }
+  }
+  return t.trim();
+}
+
+/** Delete in gv-general, post to hold with TMFIAR + tag author; edit post when they react ✅ (no Chronicus meme). */
+async function deleteInGeneralAndForwardCsamAck(message) {
+  try {
+    await message.delete();
+  } catch (err) {
+    console.error('[csam-hold] Could not delete message in gv-general:', err.message);
+  }
+  let holdChannel;
+  try {
+    holdChannel = await message.client.channels.fetch(MOVED_BY_BOT_CHANNEL_ID);
+  } catch (e) {
+    console.error('[csam-hold] Hold channel fetch failed:', e.message);
+    return;
+  }
+  if (!holdChannel?.isTextBased()) return;
+  const raw = message.content ? String(message.content).trim() : '';
+  const movedText = raw ? raw.slice(0, 1200) + (raw.length > 1200 ? '…' : '') : '(no text)';
+  const mention = message.author.toString();
+  const videoPayload = getSpamVideoPayload();
+  const instruction = `**React with ${CSAM_ACK_EMOJI} once** on this message so we know you saw this. Your post was removed from <#${TRIGGER_CHANNEL_ID}>.\nIf discussion belongs elsewhere, use <#${REDIRECT_CHANNEL_ID}>.`;
+  const lines = [
+    `${mention} — **Policy hold** (automated move from <#${TRIGGER_CHANNEL_ID}>):`,
+    movedText,
+    instruction,
+  ];
+  let content = lines.join('\n\n');
+  if (videoPayload.content && !videoPayload.files?.length) {
+    content += `\n\n${videoPayload.content}`;
+  }
+  if (content.length > 2000) content = `${content.slice(0, 1997)}…`;
+  const files = videoPayload.files?.length ? videoPayload.files : undefined;
+  let sent;
+  try {
+    sent = await holdChannel.send({
+      content,
+      files,
+      allowedMentions: { users: [message.author.id] },
+    });
+  } catch (err) {
+    console.error('[csam-hold] Send to hold channel failed:', err);
+    return;
+  }
+  const ackFilter = (reaction, user) =>
+    user.id === message.author.id && !user.bot && reaction.emoji.name === CSAM_ACK_EMOJI;
+  const collector = sent.createReactionCollector({ filter: ackFilter, max: 1, time: CSAM_ACK_COLLECTOR_MS });
+  collector.on('collect', async () => {
+    try {
+      const append = `\n\n— ${mention} acknowledged ${CSAM_ACK_EMOJI}.`;
+      const base = sent.content || '';
+      const next = base + append;
+      if (next.length <= 2000) {
+        await sent.edit({ content: next });
+      } else {
+        await sent.reply({
+          content: `— ${mention} acknowledged ${CSAM_ACK_EMOJI}.`,
+          allowedMentions: { users: [message.author.id] },
+        });
+      }
+    } catch (e) {
+      if (DEBUG) console.warn('[csam-hold] Ack edit failed:', e.message);
+    }
+  });
+}
+
 // Download a URL to a local file (for off-topic → gv-general so we upload fresh files instead of reusing Discord URLs that break after delete)
 async function downloadUrlToFile(url, filePath) {
   const res = await fetch(url, { headers: { 'User-Agent': 'DiscordBot (GV-LegacyGeneralMod)' } });
@@ -1417,7 +1544,9 @@ const client = new Client({
     GatewayIntentBits.GuildMembers, // required for guildMemberAdd (enable "Server Members Intent" in Discord Developer Portal)
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions, // CSAM hold: detect author's ✅ on bot message
   ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
   // Prevent OOM on Render by limiting per-guild member caching.
   // discord.js can otherwise cache the full guild member list on connect.
   makeCache: Options.cacheWithLimits({
@@ -1436,6 +1565,7 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus still points to <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
+  console.log(`CSAM/grooming triggers: ${csamGroomingTriggers.length} lines → hold + TMFIAR + ${CSAM_ACK_EMOJI} ack (${CSAM_GROOMING_WORDS_FILE})`);
   console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
   console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
 
@@ -1625,6 +1755,13 @@ client.on('messageCreate', async (message) => {
   if (channelId !== TRIGGER_CHANNEL_ID) {
     if (DEBUG) console.log(`[skip] channel ${channelId} !== ${TRIGGER_CHANNEL_ID}`);
     return; // only gv-general
+  }
+
+  const csamScanText = getMessageTextForCsamScan(message);
+  if (csamScanText && hasCsamGroomingTrigger(csamScanText)) {
+    if (DEBUG) console.log(`[csam-hold] Trigger for ${message.author.tag}`);
+    await deleteInGeneralAndForwardCsamAck(message);
+    return;
   }
 
   // Specific user: move their media (GIF/image/video or tenor.com links) when the message text contains religion/politics → hold channel
