@@ -43,6 +43,11 @@ const VIDEO_CONTENT_TYPES = /^video\//;
 // Folder for downloading off-topic attachments before forwarding to gv-general (Discord URLs break after original message is deleted). Default: assets/memes
 const FORWARDED_MEDIA_DIR = process.env.FORWARDED_MEDIA_DIR || path.join(process.cwd(), 'assets', 'memes');
 const FORWARDED_MEDIA_EXTENSIONS = /\.(jpe?g|png|gif|webp|mp4|webm|mov|mp3|wav|m4a|ogg)$/i;
+// Block specific Tenor/embed/attachment IDs in gv-general → same hold flow as off-topic (see desktop list)
+const BLOCKED_MEDIA_IDS = (process.env.BLOCKED_MEDIA_IDS || '1749001747706566')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 // RSS feed → Discord announcement channel (e.g. Gloria Victis news). If the site has no RSS, use a converter like https://rss.app/ with the news page URL.
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1482341063674036284';
 const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bRtM0TKZJF.xml'; // Gloria Victis | gamigo news (override with env if needed)
@@ -596,7 +601,7 @@ function buildOffTopicPhrases() {
   return [...phrases];
 }
 const OFF_TOPIC_PHRASES = buildOffTopicPhrases();
-console.log(`Off-topic phrases: ${OFF_TOPIC_PHRASES.length} (body/gender/race/nationality variants).`);
+console.log(`Off-topic phrases: ${OFF_TOPIC_PHRASES.length} + ${OFF_TOPIC_EXTRA_PHRASES.length} extra (body/gender/race/nationality + desktop).`);
 
 // Video reply: default is Streamable link so the bot always has access. Override with VIDEO_URL or VIDEO_PATH (local file).
 const DEFAULT_VIDEO_URL = 'https://streamable.com/e/mwfkm2';
@@ -697,11 +702,15 @@ function hasSpamSlur(text) {
 // Exception: "mad men" / "lunatics" in idiom/quote context (e.g. "nation filled with mad men and lunatics") — don't trigger off-topic
 const OFF_TOPIC_SAFE_PHRASES = ['mad men', 'mad man', 'lunatics', 'lunatic', 'gamigo', 'trove'];
 
+// Extra phrases (meme slang / desktop list) → same off-topic redirect as OFF_TOPIC_PHRASES
+const OFF_TOPIC_EXTRA_PHRASES = ['copium', 'afrocentrism', 'afrocentric'].map((p) => p.toLowerCase());
+
 // Check if message contains any off-topic phrase (case-insensitive substring)
 function hasOffTopicPhrase(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
   if (OFF_TOPIC_SAFE_PHRASES.some(safe => lower.includes(safe))) return false;
+  if (OFF_TOPIC_EXTRA_PHRASES.some((phrase) => lower.includes(phrase))) return true;
   return OFF_TOPIC_PHRASES.some(phrase => lower.includes(phrase));
 }
 
@@ -718,6 +727,10 @@ function hasStereotypeRaceReligionRedirect(text) {
   if (/\b(all|most) (muslims|jews|christians|mexicans|blacks|whites|asians|arabs|hindus|immigrants)\s+(are|like|so|always|just)\b/i.test(lower)) return true;
   if (/\bdo (all|most) (muslims|jews|christians|hindus|mormons)\b/i.test(lower)) return true;
   if (/\b(is|are) (all|most) (muslims|jews|christians|hindus|mexicans)\b/i.test(lower)) return true;
+  // Racialized “brown people” bait / UK meme patterns (desktop list)
+  if (lower.includes('soft spot for brown people')) return true;
+  if (lower.includes('brown spot for') && lower.includes('brown people')) return true;
+  if (lower.includes('many such cases') && (/\buk\b/i.test(lower) || lower.includes('united kingdom'))) return true;
   return false;
 }
 
@@ -1240,10 +1253,32 @@ function isExcludedFromDeleteAndMeme(message) {
   return /savage|unban/.test(name);
 }
 
+/** True if message text/embeds/attachments reference a blocked Tenor/GIF id (substring match). */
+function messageHasBlockedMediaId(message) {
+  if (!BLOCKED_MEDIA_IDS.length) return false;
+  const parts = [];
+  if (message.content) parts.push(message.content);
+  for (const e of message.embeds || []) {
+    if (e.url) parts.push(e.url);
+    if (e.thumbnail?.url) parts.push(e.thumbnail.url);
+    if (e.image?.url) parts.push(e.image.url);
+    if (e.video?.url) parts.push(e.video.url);
+  }
+  for (const a of message.attachments?.values() || []) {
+    if (a.name) parts.push(a.name);
+    if (a.url) parts.push(a.url);
+  }
+  const blob = parts.join(' ');
+  return BLOCKED_MEDIA_IDS.some((id) => blob.includes(id));
+}
+
 // gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect;
 // DM (French) when ≥10 strikes in 5 min OR ≥50 strikes in 1 h; if DM fails, ping in #miaow (French).
+// Also: ≥10 posts in 5 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush).
 const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
 const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
+const SPAM_WATCH_GV_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_GV_VOLUME_WINDOW_MS || String(5 * 60 * 1000), 10));
+const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '10', 10));
 const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
 const SPAM_WATCH_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_VOLUME_WINDOW_MS || String(60 * 60 * 1000), 10)); // default 1h
 const SPAM_WATCH_CONTENT_COUNT_MAX_KEYS = 120;
@@ -1279,13 +1314,14 @@ function loadSpamWatchState() {
           strikeTimes: Array.isArray(data.strikeTimes) ? data.strikeTimes : [],
           contentCounts: data.contentCounts && typeof data.contentCounts === 'object' ? data.contentCounts : {},
           recentMessageTimes: Array.isArray(data.recentMessageTimes) ? data.recentMessageTimes : [],
+          gvVolumeRecent: Array.isArray(data.gvVolumeRecent) ? data.gvVolumeRecent : [],
         };
       }
     }
   } catch (e) {
     console.warn('spam-watch load failed:', e.message);
   }
-  return { strikeTimes: [], contentCounts: {}, recentMessageTimes: [] };
+  return { strikeTimes: [], contentCounts: {}, recentMessageTimes: [], gvVolumeRecent: [] };
 }
 
 function saveSpamWatchState(state) {
@@ -1324,6 +1360,77 @@ async function sendSpamWatchMiaowDmFallback(client) {
   } catch (e) {
     console.error('spam-watch miaow fallback channel failed:', e.message);
   }
+}
+
+/** Download attachments, post to #miaow, then delete from gv-general (Discord CDN URLs expire after delete). */
+async function deleteAndRepostSpamWatchToMiaow(message) {
+  const dest = await message.client.channels.fetch(SPAM_WATCH_MIAOW_CHANNEL_ID).catch(() => null);
+  if (!dest?.isTextBased()) return;
+  const raw = message.content ? String(message.content).trim() : '';
+  const text = raw ? raw.slice(0, 1900) + (raw.length > 1900 ? '…' : '') : '(no text)';
+  const files = [];
+  if (message.attachments?.size) {
+    const dir = FORWARDED_MEDIA_DIR;
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    let idx = 0;
+    for (const att of message.attachments.values()) {
+      const ext = path.extname(att.name || '') || '.bin';
+      const safeName = (att.name || `file${ext}`).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+      const localPath = path.join(dir, `swvol_${message.id}_${idx}_${safeName}`);
+      try {
+        await downloadUrlToFile(att.url, localPath);
+        files.push({ attachment: localPath, name: safeName });
+      } catch (e) {
+        if (DEBUG) console.warn('[spam-watch-volume] attachment download failed:', e.message);
+      }
+      idx++;
+    }
+  }
+  const content = [`${message.author} — moved from <#${TRIGGER_CHANNEL_ID}> (${SPAM_WATCH_GV_VOLUME_THRESHOLD}+ posts / ${Math.round(SPAM_WATCH_GV_VOLUME_WINDOW_MS / 60000)} min):`, text].join('\n\n');
+  try {
+    await dest.send({
+      content,
+      files: files.length ? files : undefined,
+      allowedMentions: { users: [message.author.id] },
+    });
+  } catch (e) {
+    console.error('[spam-watch-volume] send failed:', e.message);
+    return;
+  }
+  try {
+    await message.delete();
+  } catch (e) {
+    console.error('[spam-watch-volume] delete failed:', e.message);
+  }
+}
+
+/**
+ * Track all gv-general messages from spam-watch user; when count ≥ threshold in rolling window, move oldest batch to #miaow.
+ * @returns {Promise<boolean>} true if this turn flushed (caller should return)
+ */
+async function handleSpamWatchVolumeFlush(message) {
+  if (String(message.author.id) !== SPAM_WATCH_USER_ID) return false;
+  const state = loadSpamWatchState();
+  const now = Date.now();
+  state.gvVolumeRecent = (state.gvVolumeRecent || []).filter((e) => now - e.ts < SPAM_WATCH_GV_VOLUME_WINDOW_MS);
+  state.gvVolumeRecent.push({ id: message.id, ts: now });
+  if (state.gvVolumeRecent.length < SPAM_WATCH_GV_VOLUME_THRESHOLD) {
+    saveSpamWatchState(state);
+    return false;
+  }
+  state.gvVolumeRecent.sort((a, b) => a.ts - b.ts);
+  const batch = state.gvVolumeRecent.splice(0, SPAM_WATCH_GV_VOLUME_THRESHOLD);
+  saveSpamWatchState(state);
+
+  const channel = message.channel;
+  for (const { id } of batch) {
+    const m = id === message.id ? message : await channel.messages.fetch(id).catch(() => null);
+    if (m) await deleteAndRepostSpamWatchToMiaow(m);
+  }
+  if (DEBUG) {
+    console.log(`[spam-watch-volume] Flushed ${batch.length} message(s) to <#${SPAM_WATCH_MIAOW_CHANNEL_ID}>`);
+  }
+  return true;
 }
 
 /** @returns {Promise<boolean>} true if handled (caller should return) */
@@ -1763,6 +1870,16 @@ client.on('messageCreate', async (message) => {
     await deleteInGeneralAndForwardCsamAck(message);
     return;
   }
+
+  if (messageHasBlockedMediaId(message)) {
+    if (!isExcludedFromDeleteAndMeme(message)) {
+      await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
+      if (DEBUG) console.log(`[blocked-media] ${message.author.tag}`);
+    }
+    return;
+  }
+
+  if (await handleSpamWatchVolumeFlush(message)) return;
 
   // Specific user: move their media (GIF/image/video or tenor.com links) when the message text contains religion/politics → hold channel
   if (message.author.id === MEDIA_RELIGION_OFFTOPIC_USER_ID) {
