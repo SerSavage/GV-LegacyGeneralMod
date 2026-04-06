@@ -611,7 +611,10 @@ function buildOffTopicPhrases() {
 }
 
 // Extra phrases (meme slang / desktop list) — must be defined before OFF_TOPIC_PHRASES log below
-const OFF_TOPIC_EXTRA_PHRASES = ['copium', 'afrocentrism', 'afrocentric'].map((p) => p.toLowerCase());
+const OFF_TOPIC_EXTRA_PHRASES = [
+  'copium', 'afrocentrism', 'afrocentric',
+  'delulu', 'dilulu', 'telulu', 'sir delulu', 'miss delulu', 'mr delulu', 'missus delulu',
+].map((p) => p.toLowerCase());
 
 const OFF_TOPIC_PHRASES = buildOffTopicPhrases();
 console.log(`Off-topic phrases: ${OFF_TOPIC_PHRASES.length} + ${OFF_TOPIC_EXTRA_PHRASES.length} extra (body/gender/race/nationality + desktop).`);
@@ -767,6 +770,7 @@ const MEDICAL_PSYCH_INSULT_SUBSTRINGS = [
   'autist', 'autistic', 'asperger', 'aspie', 'tism',
   'manic', 'maniac',
   'delusional', 'delusion',
+  'delulu', 'dilulu', 'telulu', 'sir delulu', 'miss delulu', 'mr delulu',
   'mentally ill', 'mental illness', 'mental patient',
   'nutcase', 'nutjob', 'nut job', 'nuthouse', 'nutters', 'nutter',
   'spastic', 'spaz',
@@ -818,7 +822,7 @@ function hasMedicalPsychiatricInsult(text) {
 }
 console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (some "retarded" uses ignored in game context).`);
 
-// Harassment / race-bait with evasion-resistant normalization ("de lusional", "d3lusional", etc.).
+// Harassment / race-bait with evasion-resistant normalization ("de lusional", "d3lusional", "SirDelulu", etc.).
 // Same rules for all users — routed to hold/off-topic flow with no safe-context bypass.
 function hasHarassmentRaceBaitEvasion(text) {
   if (!text || typeof text !== 'string') return false;
@@ -826,7 +830,21 @@ function hasHarassmentRaceBaitEvasion(text) {
   const normalized = normalizeForMatch(lower);
   const compact = normalized.replace(/[^a-z]/g, '');
 
-  const hasDelusional = compact.includes('delusional') || compact.includes('delusion');
+  // Delusion insults (clinical + meme slang / handles): SirDelulu, Sir_Delulu, s i r d e l u l u → compact delulu
+  const hasDelusional =
+    compact.includes('delusional') ||
+    compact.includes('delusion') ||
+    compact.includes('delulu') ||
+    compact.includes('dilulu') ||
+    compact.includes('telulu') ||
+    compact.includes('dilusion') ||
+    compact.includes('deulusion') ||
+    compact.includes('dilusional') ||
+    lower.includes('sir delulu') ||
+    lower.includes('miss delulu') ||
+    lower.includes('mr delulu') ||
+    lower.includes('missus delulu');
+
   const hasBigFella = lower.includes('big fella') || compact.includes('bigfella');
   const hasBlackPlaguePlayer =
     lower.includes('black plague player') ||
