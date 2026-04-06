@@ -39,7 +39,7 @@ const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '
 const MEDIA_RELIGION_OFFTOPIC_USER_ID = process.env.MEDIA_RELIGION_OFFTOPIC_USER_ID || '1107129004642799616';
 // If configured authors target Ser/SirSavage (mention or evasion spelling), bot pings them with NOOBMARS_MENTION_REPLY.
 const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
-  String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904')
+  String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,1409669933801144453')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
@@ -49,12 +49,16 @@ const NOOBMARS_MENTION_REPLY = process.env.NOOBMARS_MENTION_REPLY || 'N00bmars';
 const DELUSION_STRICT_USER_ID = String(process.env.DELUSION_STRICT_USER_ID || '188328879180480512');
 function hasSavageNameTrigger(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
-  if (lower.includes('sersavage') || lower.includes('sirsavage')) return true;
+  const lower = stripDiacritics(text.toLowerCase());
+  // Direct forms in sentence context (e.g. "tarzan and savage")
+  if (/\bsersavage\b/.test(lower) || /\bsirsavage\b/.test(lower) || /\bsavage\b/.test(lower)) return true;
+  if (/\bser\s+savage\b/.test(lower) || /\bsir\s+savage\b/.test(lower)) return true;
+
   const compact = normalizeForMatch(lower).replace(/[^a-z]/g, '');
-  if (compact.includes('sersavage') || compact.includes('sirsavage')) return true;
-  // Evasion-friendly shape: sir/ser + savage with loose vowels/doubles (e.g. "sirsaavage", "sersavge")
-  return /s[ei]r+s+a?v+a?g+e?/.test(compact);
+  if (compact.includes('sersavage') || compact.includes('sirsavage') || compact.includes('savage')) return true;
+  // Evasion-friendly shapes: sir/ser + savage OR stretched plain savage (e.g. "sirsaavage", "sersavge", "saaavage")
+  if (/s[ei]r+s+a?v+a?g+e?/.test(compact)) return true;
+  return /s+a+v+a?g+e+/.test(compact);
 }
 function shouldReplyNoobmars(message) {
   if (!message || !message.author) return false;
@@ -1415,11 +1419,11 @@ function messageHasBlockedMediaId(message) {
 
 // gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect;
 // DM (French) when ≥10 strikes in 5 min OR ≥50 strikes in 1 h; if DM fails, ping in #miaow (French).
-// Also: ≥10 posts in 5 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush).
+// Also: >50 posts in 10 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush).
 const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
 const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
-const SPAM_WATCH_GV_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_GV_VOLUME_WINDOW_MS || String(5 * 60 * 1000), 10));
-const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '10', 10));
+const SPAM_WATCH_GV_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_GV_VOLUME_WINDOW_MS || String(10 * 60 * 1000), 10));
+const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '50', 10));
 const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
 const SPAM_WATCH_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_VOLUME_WINDOW_MS || String(60 * 60 * 1000), 10)); // default 1h
 const SPAM_WATCH_CONTENT_COUNT_MAX_KEYS = 120;
