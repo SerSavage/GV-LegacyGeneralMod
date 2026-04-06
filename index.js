@@ -46,8 +46,6 @@ function hasNoobagsNameTrigger(text) {
   const lower = text.toLowerCase();
   return lower.includes('sersavage') || lower.includes('sirsavage');
 }
-// Stricter harassment/race-bait handling for one user (desktop request).
-const HARASSMENT_STRICT_USER_ID = String(process.env.HARASSMENT_STRICT_USER_ID || '188328879180480512');
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
 const IMAGE_CONTENT_TYPES = /^image\//;
 const VIDEO_CONTENT_TYPES = /^video\//;
@@ -707,23 +705,37 @@ function hasTriggerWord(text) {
   return false;
 }
 
-// Check if message contains any spam/slur term (case-insensitive)
+// Check if message contains any spam/slur term (case-insensitive + compact anti-evasion)
 function hasSpamSlur(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
-  return SPAM_SLUR_TERMS.some(term => lower.includes(term));
+  if (SPAM_SLUR_TERMS.some((term) => lower.includes(term))) return true;
+  const compact = normalizeForMatch(lower).replace(/[^a-z0-9]/g, '');
+  for (const term of SPAM_SLUR_TERMS) {
+    if (term.length < 4) continue;
+    const tc = normalizeForMatch(term).replace(/[^a-z0-9]/g, '');
+    if (tc.length >= 4 && compact.includes(tc)) return true;
+  }
+  return false;
 }
 
 // Exception: "mad men" / "lunatics" in idiom/quote context (e.g. "nation filled with mad men and lunatics") — don't trigger off-topic
 const OFF_TOPIC_SAFE_PHRASES = ['mad men', 'mad man', 'lunatics', 'lunatic', 'gamigo', 'trove'];
 
-// Check if message contains any off-topic phrase (case-insensitive substring)
+// Check if message contains any off-topic phrase (substring + compact anti-evasion for spaced typing)
 function hasOffTopicPhrase(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
-  if (OFF_TOPIC_SAFE_PHRASES.some(safe => lower.includes(safe))) return false;
-  if (OFF_TOPIC_EXTRA_PHRASES.some((phrase) => lower.includes(phrase))) return true;
-  return OFF_TOPIC_PHRASES.some(phrase => lower.includes(phrase));
+  if (OFF_TOPIC_SAFE_PHRASES.some((safe) => lower.includes(safe))) return false;
+  const compact = normalizeForMatch(lower).replace(/[^a-z]/g, '');
+  const phraseMatches = (phrase, minCompact) => {
+    if (lower.includes(phrase)) return true;
+    if (phrase.length < minCompact) return false;
+    const pc = phrase.replace(/\s+/g, '');
+    return pc.length >= minCompact && compact.includes(pc);
+  };
+  if (OFF_TOPIC_EXTRA_PHRASES.some((phrase) => phraseMatches(phrase, 4))) return true;
+  return OFF_TOPIC_PHRASES.some((phrase) => phraseMatches(phrase, 6));
 }
 
 // Broad racial/religious stereotype generalizations (same redirect as vulgar off-topic). Runs before safe-context so it is not bypassed.
@@ -786,6 +798,7 @@ function hasMedicalPsychiatricInsult(text) {
     /\b(steam|mortal online|gloria victis|in[- ]game|ingame|mmorpg|looting?|loot)\b/.test(lower)
     || /\bbug(s)?\b/.test(lower);
 
+  const compact = normalized.replace(/[^a-z]/g, '');
   for (const sub of MEDICAL_PSYCH_INSULT_SUBSTRINGS) {
     if (lower.includes(sub)) {
       if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
@@ -796,13 +809,18 @@ function hasMedicalPsychiatricInsult(text) {
       if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
       return true;
     }
+    if (sub.includes(' ') && sub.replace(/\s+/g, '').length >= 5 && compact.includes(sub.replace(/\s+/g, ''))) {
+      if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
+      return true;
+    }
   }
   return false;
 }
+console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (some "retarded" uses ignored in game context).`);
 
 // Harassment / race-bait with evasion-resistant normalization ("de lusional", "d3lusional", etc.).
-// Routed to hold/off-topic flow with no safe-context bypass.
-function hasHarassmentRaceBaitEvasion(text, authorId) {
+// Same rules for all users — routed to hold/off-topic flow with no safe-context bypass.
+function hasHarassmentRaceBaitEvasion(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
   const normalized = normalizeForMatch(lower);
@@ -814,23 +832,9 @@ function hasHarassmentRaceBaitEvasion(text, authorId) {
     lower.includes('black plague player') ||
     (lower.includes('black plague') && lower.includes('player')) ||
     compact.includes('blackplagueplayer');
-  const hasRaceBait =
-    /\bbrown people\b/i.test(lower) ||
-    /\bblack people\b/i.test(lower) ||
-    /\bwhite people\b/i.test(lower) ||
-    /\b(black|white|brown)\s+(guy|guys|man|men|fella|fellas)\b/i.test(lower);
 
-  // Global: clear race-bait forms or direct phrase from report.
-  if (hasBlackPlaguePlayer) return true;
-  if (hasRaceBait && (hasDelusional || hasBigFella)) return true;
-
-  // Strict user: lower threshold on these bait/insult forms.
-  if (String(authorId) === HARASSMENT_STRICT_USER_ID) {
-    if (hasDelusional || hasBigFella || hasBlackPlaguePlayer) return true;
-  }
-  return false;
+  return hasDelusional || hasBigFella || hasBlackPlaguePlayer;
 }
-console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (some "retarded" uses ignored in game context).`);
 
 // Real-world geopolitical keywords (POLITICAL_EXTRA-style + close variants). Runs BEFORE safe-context so "guilds + NATO" still → #off-topic (random GIF, same as religion/politics).
 const GEOPOLITICAL_HARD_SUBSTRINGS = [
@@ -1960,7 +1964,7 @@ client.on('messageCreate', async (message) => {
   if (await handleSpamWatchUser(message)) return;
 
   // Harassment/race-bait evasion (e.g. "de lusional ... black plague player ... big fella") → hold channel.
-  if (hasHarassmentRaceBaitEvasion(message.content, message.author.id)) {
+  if (hasHarassmentRaceBaitEvasion(message.content)) {
     if (isExcludedFromDeleteAndMeme(message)) return;
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
