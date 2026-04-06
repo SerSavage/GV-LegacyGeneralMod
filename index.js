@@ -37,22 +37,40 @@ const CSAM_ACK_COLLECTOR_MS = 7 * 24 * 60 * 60 * 1000; // wait up to 7 days for 
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
 // User ID whose media (GIFs, images, videos, tenor.com links) with religious/political content in the message text get moved to #off-topic
 const MEDIA_RELIGION_OFFTOPIC_USER_ID = process.env.MEDIA_RELIGION_OFFTOPIC_USER_ID || '1107129004642799616';
-// If this author mentions this target user, or types "sersavage" / "sirsavage", bot replies with text + optional screenshot.
-const NOOBAGS_TRIGGER_AUTHOR_ID = String(process.env.NOOBAGS_TRIGGER_AUTHOR_ID || '210085436566011904');
-const NOOBAGS_TRIGGER_TARGET_ID = String(process.env.NOOBAGS_TRIGGER_TARGET_ID || '275603696036085760');
-const NOOBAGS_MENTION_REPLY = process.env.NOOBAGS_MENTION_REPLY || 'N00bags';
-const NOOBAGS_IMAGE_PATH = process.env.NOOBAGS_IMAGE_PATH || path.join(process.cwd(), 'assets', 'n00bags-screenshot.png');
-function hasNoobagsNameTrigger(text) {
+// If configured authors target Ser/SirSavage (mention or evasion spelling), bot pings them with NOOBMARS_MENTION_REPLY.
+const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
+  String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+const NOOBMARS_TRIGGER_TARGET_ID = String(process.env.NOOBMARS_TRIGGER_TARGET_ID || '275603696036085760');
+const NOOBMARS_MENTION_REPLY = process.env.NOOBMARS_MENTION_REPLY || 'N00bmars';
+const DELUSION_STRICT_USER_ID = String(process.env.DELUSION_STRICT_USER_ID || '188328879180480512');
+function hasSavageNameTrigger(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
-  return lower.includes('sersavage') || lower.includes('sirsavage');
+  if (lower.includes('sersavage') || lower.includes('sirsavage')) return true;
+  const compact = normalizeForMatch(lower).replace(/[^a-z]/g, '');
+  if (compact.includes('sersavage') || compact.includes('sirsavage')) return true;
+  // Evasion-friendly shape: sir/ser + savage with loose vowels/doubles (e.g. "sirsaavage", "sersavge")
+  return /s[ei]r+s+a?v+a?g+e?/.test(compact);
 }
-function getNoobagsReplyPayload() {
-  const payload = { content: NOOBAGS_MENTION_REPLY };
-  if (NOOBAGS_IMAGE_PATH && fs.existsSync(NOOBAGS_IMAGE_PATH)) {
-    payload.files = [{ attachment: NOOBAGS_IMAGE_PATH, name: path.basename(NOOBAGS_IMAGE_PATH) }];
-  }
-  return payload;
+function shouldReplyNoobmars(message) {
+  if (!message || !message.author) return false;
+  if (!NOOBMARS_TRIGGER_AUTHOR_IDS.has(String(message.author.id))) return false;
+  if (message.mentions?.users?.has(NOOBMARS_TRIGGER_TARGET_ID)) return true;
+  return hasSavageNameTrigger(message.content);
+}
+function getNoobmarsReplyPayload(authorId) {
+  return {
+    content: `<@${authorId}> ${NOOBMARS_MENTION_REPLY}`,
+    allowedMentions: { users: [authorId] },
+  };
+}
+
+function stripDiacritics(text) {
+  return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
 const IMAGE_CONTENT_TYPES = /^image\//;
@@ -832,14 +850,64 @@ console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBST
 
 // Harassment / race-bait with evasion-resistant normalization ("de lusional", "d3lusional", "SirDelulu", etc.).
 // Same rules for all users — routed to hold/off-topic flow with no safe-context bypass.
-function hasHarassmentRaceBaitEvasion(text) {
+function editDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+function multisetOverlapCount(a, b) {
+  const count = new Map();
+  for (const ch of b) count.set(ch, (count.get(ch) || 0) + 1);
+  let overlap = 0;
+  for (const ch of a) {
+    const n = count.get(ch) || 0;
+    if (n > 0) {
+      overlap++;
+      count.set(ch, n - 1);
+    }
+  }
+  return overlap;
+}
+function looksLikeDelusionVariant(text, strict) {
+  const cleaned = stripDiacritics(normalizeForMatch(text).toLowerCase());
+  const tokens = cleaned.split(/[^a-z0-9]+/).filter(Boolean);
+  const targets = ['delusion', 'delusional', 'delulu', 'dilusion', 'dilusional', 'deulusion'];
+  for (const tok of tokens) {
+    const t = tok.replace(/[^a-z]/g, '');
+    if (!t) continue;
+    if (targets.some((x) => t.includes(x))) return true;
+    if (t.length < 6 || t.length > 18) continue;
+    const overlap = multisetOverlapCount(t, 'delusion');
+    const minDist = Math.min(
+      editDistance(t, 'delusion'),
+      editDistance(t, 'delusional'),
+      editDistance(t, 'delulu'),
+    );
+    const hasCore = t.includes('delu') || t.includes('lusi') || (t.includes('del') && t.includes('usi'));
+    if (overlap >= 6 && (minDist <= 3 || hasCore)) return true;
+    if (strict && overlap >= 5 && (minDist <= 4 || hasCore)) return true;
+  }
+  return false;
+}
+function hasHarassmentRaceBaitEvasion(text, authorId) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
+  const lower = stripDiacritics(text.toLowerCase());
   const normalized = normalizeForMatch(lower);
   const compact = normalized.replace(/[^a-z]/g, '');
+  const strict = String(authorId) === DELUSION_STRICT_USER_ID;
 
   // Delusion insults (clinical + meme slang / handles): SirDelulu, Sir_Delulu, s i r d e l u l u → compact delulu
   const hasDelusional =
+    looksLikeDelusionVariant(lower, strict) ||
     compact.includes('delusional') ||
     compact.includes('delusion') ||
     compact.includes('delulu') ||
@@ -1880,14 +1948,11 @@ client.on('messageCreate', async (message) => {
 
   if (message.author.bot) return; // from here on we only react to user messages in gv-general
 
-  if (
-    message.author.id === NOOBAGS_TRIGGER_AUTHOR_ID &&
-    (message.mentions?.users?.has(NOOBAGS_TRIGGER_TARGET_ID) || hasNoobagsNameTrigger(message.content))
-  ) {
+  if (shouldReplyNoobmars(message)) {
     try {
-      await message.reply(getNoobagsReplyPayload());
+      await message.reply(getNoobmarsReplyPayload(message.author.id));
     } catch (err) {
-      console.error('Noobags mention reply failed:', err.message);
+      console.error('Noobmars mention reply failed:', err.message);
     }
     return;
   }
@@ -1990,7 +2055,7 @@ client.on('messageCreate', async (message) => {
   if (await handleSpamWatchUser(message)) return;
 
   // Harassment/race-bait evasion (e.g. "de lusional ... black plague player ... big fella") → hold channel.
-  if (hasHarassmentRaceBaitEvasion(message.content)) {
+  if (hasHarassmentRaceBaitEvasion(message.content, message.author.id)) {
     if (isExcludedFromDeleteAndMeme(message)) return;
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
