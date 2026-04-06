@@ -600,6 +600,10 @@ function buildOffTopicPhrases() {
 
   return [...phrases];
 }
+
+// Extra phrases (meme slang / desktop list) — must be defined before OFF_TOPIC_PHRASES log below
+const OFF_TOPIC_EXTRA_PHRASES = ['copium', 'afrocentrism', 'afrocentric'].map((p) => p.toLowerCase());
+
 const OFF_TOPIC_PHRASES = buildOffTopicPhrases();
 console.log(`Off-topic phrases: ${OFF_TOPIC_PHRASES.length} + ${OFF_TOPIC_EXTRA_PHRASES.length} extra (body/gender/race/nationality + desktop).`);
 
@@ -701,9 +705,6 @@ function hasSpamSlur(text) {
 
 // Exception: "mad men" / "lunatics" in idiom/quote context (e.g. "nation filled with mad men and lunatics") — don't trigger off-topic
 const OFF_TOPIC_SAFE_PHRASES = ['mad men', 'mad man', 'lunatics', 'lunatic', 'gamigo', 'trove'];
-
-// Extra phrases (meme slang / desktop list) → same off-topic redirect as OFF_TOPIC_PHRASES
-const OFF_TOPIC_EXTRA_PHRASES = ['copium', 'afrocentrism', 'afrocentric'].map((p) => p.toLowerCase());
 
 // Check if message contains any off-topic phrase (case-insensitive substring)
 function hasOffTopicPhrase(text) {
