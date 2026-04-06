@@ -37,14 +37,22 @@ const CSAM_ACK_COLLECTOR_MS = 7 * 24 * 60 * 60 * 1000; // wait up to 7 days for 
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
 // User ID whose media (GIFs, images, videos, tenor.com links) with religious/political content in the message text get moved to #off-topic
 const MEDIA_RELIGION_OFFTOPIC_USER_ID = process.env.MEDIA_RELIGION_OFFTOPIC_USER_ID || '1107129004642799616';
-// If this author mentions this target user, or types "sersavage" / "sirsavage", bot replies with NOOBAGS_MENTION_REPLY.
+// If this author mentions this target user, or types "sersavage" / "sirsavage", bot replies with text + optional screenshot.
 const NOOBAGS_TRIGGER_AUTHOR_ID = String(process.env.NOOBAGS_TRIGGER_AUTHOR_ID || '210085436566011904');
 const NOOBAGS_TRIGGER_TARGET_ID = String(process.env.NOOBAGS_TRIGGER_TARGET_ID || '275603696036085760');
-const NOOBAGS_MENTION_REPLY = process.env.NOOBAGS_MENTION_REPLY || 'Noobags';
+const NOOBAGS_MENTION_REPLY = process.env.NOOBAGS_MENTION_REPLY || 'N00bags';
+const NOOBAGS_IMAGE_PATH = process.env.NOOBAGS_IMAGE_PATH || path.join(process.cwd(), 'assets', 'n00bags-screenshot.png');
 function hasNoobagsNameTrigger(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
   return lower.includes('sersavage') || lower.includes('sirsavage');
+}
+function getNoobagsReplyPayload() {
+  const payload = { content: NOOBAGS_MENTION_REPLY };
+  if (NOOBAGS_IMAGE_PATH && fs.existsSync(NOOBAGS_IMAGE_PATH)) {
+    payload.files = [{ attachment: NOOBAGS_IMAGE_PATH, name: path.basename(NOOBAGS_IMAGE_PATH) }];
+  }
+  return payload;
 }
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
 const IMAGE_CONTENT_TYPES = /^image\//;
@@ -1877,7 +1885,7 @@ client.on('messageCreate', async (message) => {
     (message.mentions?.users?.has(NOOBAGS_TRIGGER_TARGET_ID) || hasNoobagsNameTrigger(message.content))
   ) {
     try {
-      await message.reply({ content: NOOBAGS_MENTION_REPLY });
+      await message.reply(getNoobagsReplyPayload());
     } catch (err) {
       console.error('Noobags mention reply failed:', err.message);
     }
