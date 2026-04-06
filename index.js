@@ -46,6 +46,8 @@ function hasNoobagsNameTrigger(text) {
   const lower = text.toLowerCase();
   return lower.includes('sersavage') || lower.includes('sirsavage');
 }
+// Stricter harassment/race-bait handling for one user (desktop request).
+const HARASSMENT_STRICT_USER_ID = String(process.env.HARASSMENT_STRICT_USER_ID || '188328879180480512');
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
 const IMAGE_CONTENT_TYPES = /^image\//;
 const VIDEO_CONTENT_TYPES = /^video\//;
@@ -794,6 +796,37 @@ function hasMedicalPsychiatricInsult(text) {
       if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
       return true;
     }
+  }
+  return false;
+}
+
+// Harassment / race-bait with evasion-resistant normalization ("de lusional", "d3lusional", etc.).
+// Routed to hold/off-topic flow with no safe-context bypass.
+function hasHarassmentRaceBaitEvasion(text, authorId) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = text.toLowerCase();
+  const normalized = normalizeForMatch(lower);
+  const compact = normalized.replace(/[^a-z]/g, '');
+
+  const hasDelusional = compact.includes('delusional') || compact.includes('delusion');
+  const hasBigFella = lower.includes('big fella') || compact.includes('bigfella');
+  const hasBlackPlaguePlayer =
+    lower.includes('black plague player') ||
+    (lower.includes('black plague') && lower.includes('player')) ||
+    compact.includes('blackplagueplayer');
+  const hasRaceBait =
+    /\bbrown people\b/i.test(lower) ||
+    /\bblack people\b/i.test(lower) ||
+    /\bwhite people\b/i.test(lower) ||
+    /\b(black|white|brown)\s+(guy|guys|man|men|fella|fellas)\b/i.test(lower);
+
+  // Global: clear race-bait forms or direct phrase from report.
+  if (hasBlackPlaguePlayer) return true;
+  if (hasRaceBait && (hasDelusional || hasBigFella)) return true;
+
+  // Strict user: lower threshold on these bait/insult forms.
+  if (String(authorId) === HARASSMENT_STRICT_USER_ID) {
+    if (hasDelusional || hasBigFella || hasBlackPlaguePlayer) return true;
   }
   return false;
 }
@@ -1925,6 +1958,13 @@ client.on('messageCreate', async (message) => {
   }
 
   if (await handleSpamWatchUser(message)) return;
+
+  // Harassment/race-bait evasion (e.g. "de lusional ... black plague player ... big fella") → hold channel.
+  if (hasHarassmentRaceBaitEvasion(message.content, message.author.id)) {
+    if (isExcludedFromDeleteAndMeme(message)) return;
+    await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
+    return;
+  }
 
   // Monkey-emoji / moderation trope OR in-game “monkey noises” comms culture: react only, do not return
   if (hasMonkeyModerationTrope(message.content) || hasMonkeyNoisesCultureTrope(message.content)) {
