@@ -39,7 +39,7 @@ const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '
 const MEDIA_RELIGION_OFFTOPIC_USER_ID = process.env.MEDIA_RELIGION_OFFTOPIC_USER_ID || '1107129004642799616';
 // If configured authors target Ser/SirSavage (mention or evasion spelling), bot pings them with NOOBMARS_MENTION_REPLY.
 const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
-  String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,1409669933801144453')
+  String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,405079515765800979')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
