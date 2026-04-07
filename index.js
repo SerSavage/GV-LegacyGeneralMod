@@ -510,6 +510,8 @@ const SAFE_CONTEXT_BASE = [
   'mad men', 'mad man', 'lunatics', 'lunatic', // idiom/quote (e.g. "nation filled with mad men and lunatics") – skip off-topic and religion/politics
   // Gloria Victis Wiki – game/lore so "war", "empire", "worship" etc. don't trigger
   'state of war', 'gloria victis', 'black eye games',
+  // Game title context ("God of War") should not trigger religion/politics moderation.
+  'god of war',
   'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismirs', 'sangmar', 'sangarians',
   'empire of azebia', 'azebian', 'midlandic', 'sangmar empire',
   'forefather', 'greatfather', 'khagan', 'zenith',
