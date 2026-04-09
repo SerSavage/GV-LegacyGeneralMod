@@ -91,6 +91,11 @@ const BLOCKED_MEDIA_IDS = (process.env.BLOCKED_MEDIA_IDS || '1749001747706566')
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1482341063674036284';
 const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bRtM0TKZJF.xml'; // Gloria Victis | gamigo news (override with env if needed)
 const RSS_POLL_INTERVAL_MS = Math.max(60000, parseInt(process.env.RSS_POLL_INTERVAL_MS, 10) || 15 * 60 * 1000); // default 15 min
+// Second feed: official gloriavictisgame.com news (rss.app). Polled once per day; up to 2 newest unseen items per run.
+const RSS_FEED_URL_2 = process.env.RSS_FEED_URL_2 || 'https://rss.app/feeds/TKc8HJF30JuGn4mI.xml';
+const RSS_FEED_2_POLL_INTERVAL_MS = Math.max(60 * 60 * 1000, parseInt(process.env.RSS_FEED_2_POLL_INTERVAL_MS, 10) || 24 * 60 * 60 * 1000); // default 24 h
+const RSS_FEED_2_MAX_POSTS = Math.max(1, Math.min(5, parseInt(process.env.RSS_FEED_2_MAX_POSTS, 10) || 2));
+const RSS_OFFICIAL_BOOTSTRAP_KEY = '__rss_official_gv_news_bootstrapped__';
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = String(process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'); // #new-arrivals: welcome video + user tag (join or first role)
 // Channel IDs for welcome message links (Welcome + server-roles). Override with env if needed.
@@ -1877,24 +1882,42 @@ client.once('ready', () => {
   console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
   console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
 
-  // RSS feed → announcement channel: Gloria Victis news only, from today forward (no old items)
+  const startOfTodayUtc = () => {
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    return d.getTime();
+  };
+  const isGloriaVictisItem = (item) => {
+    const t = (item.title || '').toLowerCase();
+    const l = (item.link || '').toLowerCase();
+    return t.includes('gloria victis') || l.includes('gloria-victis');
+  };
+  const isFromTodayOrLater = (item) => {
+    const pub = item.pubDate;
+    if (!pub) return false;
+    const ts = pub instanceof Date ? pub.getTime() : new Date(pub).getTime();
+    return !Number.isNaN(ts) && ts >= startOfTodayUtc();
+  };
+  const officialNewsItemKey = (item) => {
+    const raw = String(item.guid || item.link || item.title || '').trim();
+    return raw ? `official:${raw}` : '';
+  };
+  const itemPubTime = (item) => {
+    const pub = item.pubDate;
+    if (!pub) return 0;
+    const ts = pub instanceof Date ? pub.getTime() : new Date(pub).getTime();
+    return Number.isNaN(ts) ? 0 : ts;
+  };
+  const sendAnnouncementRssItem = async (channel, item) => {
+    const title = item.title || 'News';
+    const link = item.link || '';
+    const snippet = (item.contentSnippet || item.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const content = link ? `${title}\n${link}${snippet ? `\n${snippet}` : ''}` : title;
+    await channel.send({ content: content.slice(0, 2000) });
+  };
+
+  // RSS feed (gamigo) → announcement channel: Gloria Victis only, from today forward (no old items)
   if (RSS_FEED_URL && ANNOUNCEMENT_CHANNEL_ID) {
-    const startOfTodayUtc = () => {
-      const d = new Date();
-      d.setUTCHours(0, 0, 0, 0);
-      return d.getTime();
-    };
-    const isGloriaVictisItem = (item) => {
-      const t = (item.title || '').toLowerCase();
-      const l = (item.link || '').toLowerCase();
-      return t.includes('gloria victis') || l.includes('gloria-victis');
-    };
-    const isFromTodayOrLater = (item) => {
-      const pub = item.pubDate;
-      if (!pub) return false;
-      const ts = pub instanceof Date ? pub.getTime() : new Date(pub).getTime();
-      return !Number.isNaN(ts) && ts >= startOfTodayUtc();
-    };
     const runRssPoll = async () => {
       try {
         const res = await fetch(RSS_FEED_URL, { headers: RSS_FETCH_HEADERS, signal: AbortSignal.timeout(15000) });
@@ -1913,15 +1936,11 @@ client.once('ready', () => {
           const id = item.guid || item.link || item.title;
           if (!id || rssSeen.has(id)) continue;
           rssSeen.add(id);
-          const title = item.title || 'News';
-          const link = item.link || '';
-          const snippet = (item.contentSnippet || item.content || '').slice(0, 300);
-          const content = link ? `${title}\n${link}${snippet ? `\n${snippet}` : ''}` : title;
-          await channel.send({ content: content.slice(0, 2000) });
+          await sendAnnouncementRssItem(channel, item);
           posted++;
           saveRssSeen(rssSeen);
         }
-        if (DEBUG && posted > 0) console.log(`[rss] Posted ${posted} Gloria Victis item(s) to announcement channel`);
+        if (DEBUG && posted > 0) console.log(`[rss] Posted ${posted} Gloria Victis item(s) to announcement channel (gamigo feed)`);
       } catch (err) {
         console.error('RSS poll failed:', err.message || err);
         // 403 = feed URL blocks requests from Render's IP. Try another RSS source or leave RSS_FEED_URL unset to disable.
@@ -1929,6 +1948,56 @@ client.once('ready', () => {
     };
     runRssPoll();
     setInterval(runRssPoll, RSS_POLL_INTERVAL_MS);
+  }
+
+  // Second RSS (official site / rss.app) → same channel; daily poll; max 2 newest unseen per run. First run bootstraps seen IDs only (no backlog spam).
+  if (RSS_FEED_URL_2 && ANNOUNCEMENT_CHANNEL_ID) {
+    const runOfficialNewsPoll = async () => {
+      try {
+        const res = await fetch(RSS_FEED_URL_2, { headers: RSS_FETCH_HEADERS, signal: AbortSignal.timeout(15000) });
+        if (!res.ok) {
+          const host = (() => { try { return new URL(RSS_FEED_URL_2).host; } catch { return 'feed'; } })();
+          throw new Error(`Status code ${res.status} from ${host} (RSS feed 2)`);
+        }
+        const xml = await res.text();
+        const feed = await rssParser.parseString(xml);
+        const channel = await client.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
+        if (!channel?.isTextBased()) return;
+
+        const items = [...(feed.items || [])];
+        if (!rssSeen.has(RSS_OFFICIAL_BOOTSTRAP_KEY)) {
+          for (const item of items) {
+            const key = officialNewsItemKey(item);
+            if (key) rssSeen.add(key);
+          }
+          rssSeen.add(RSS_OFFICIAL_BOOTSTRAP_KEY);
+          saveRssSeen(rssSeen);
+          if (DEBUG) console.log('[rss2] Bootstrapped official GV news feed (marked current items seen; no posts)');
+          return;
+        }
+
+        const unseen = items
+          .map((item) => ({ item, key: officialNewsItemKey(item) }))
+          .filter(({ key }) => key && !rssSeen.has(key))
+          .sort((a, b) => itemPubTime(b.item) - itemPubTime(a.item))
+          .slice(0, RSS_FEED_2_MAX_POSTS);
+
+        let posted = 0;
+        for (let i = unseen.length - 1; i >= 0; i--) {
+          const { item, key } = unseen[i];
+          rssSeen.add(key);
+          saveRssSeen(rssSeen);
+          await sendAnnouncementRssItem(channel, item);
+          posted++;
+        }
+        if (DEBUG && posted > 0) console.log(`[rss2] Posted ${posted} official GV news item(s) (feed 2)`);
+      } catch (err) {
+        console.error('RSS feed 2 poll failed:', err.message || err);
+      }
+    };
+    runOfficialNewsPoll();
+    setInterval(runOfficialNewsPoll, RSS_FEED_2_POLL_INTERVAL_MS);
+    console.log(`RSS feed 2 (official GV news): every ${Math.round(RSS_FEED_2_POLL_INTERVAL_MS / 3600000)}h, max ${RSS_FEED_2_MAX_POSTS} new item(s) → <#${ANNOUNCEMENT_CHANNEL_ID}>`);
   }
 });
 
