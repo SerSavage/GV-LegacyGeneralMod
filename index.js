@@ -494,7 +494,8 @@ const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 // • New member welcome → random from NEW_ARRIVAL_VIDEO_URLS in #new-arrivals (channel NEW_ARRIVALS_CHANNEL_ID), user mentioned by ID
 
 // Safe-context terms: if message contains any of these (game/community/lore), we do NOT trigger religion/politics filter.
-// Built from in-code list + Gloria Victis Wiki (https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki) + optional safe-context.txt
+// Built from in-code list + Gloria Victis Wiki (https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki) + official wiki
+// (https://wiki.gloriavictisgame.com/index.php/Main_Page) + optional safe-context.txt
 const SAFE_CONTEXT_BASE = [
   'nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke',
   'downvote', 'upvote', 'voted', 'voting', 'sub',
@@ -517,6 +518,10 @@ const SAFE_CONTEXT_BASE = [
   'forefather', 'greatfather', 'khagan', 'zenith',
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
   'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
+  // Gloria Victis wikis (https://wiki.gloriavictisgame.com/ + Fandom) — base terms; deeper curated phrases live in safe-context.txt
+  'character statistics', 'fast travel', 'mounts', 'player stalls', 'gathering resources', 'barn manager',
+  'renovation kit', 'frontier guard', 'guild levels', 'feudal system', 'patronus nobilis', 'leveling guide',
+  'video combat guide', 'survival instinct',
   // Store/platform + game discussion so real-world politics triggers don't fire on game-related posts.
   'steam', 'mortal online',
   'geliand', 'hillead', 'infidels', 'island', 'fashion', 'chests', 'titles', 'interfaces', 'map',
@@ -1152,6 +1157,54 @@ function messageContainsReligionPoliticsPhrase(text) {
   return RELIGION_POLITICS_PHRASES.some(p => lower.includes(p));
 }
 
+/** Obvious religious discussion — do not treat "god" as casual if these appear. */
+function hasStrongReligionMarker(text) {
+  const lower = stripDiacritics(text.toLowerCase());
+  const markers = [
+    'church', 'mosque', 'synagogue', 'temple ', 'bible', 'quran', 'koran', 'gospel', 'torah', 'talmud',
+    'jesus', 'christ ', 'christian', 'muslim', 'islam', 'jewish', 'judaism', 'allah', 'hindu', 'buddh',
+    'pray', 'prayer', 'worship', 'sermon', 'pastor', 'priest', 'imam', 'rabbi', 'atheis', 'agnostic',
+    'sacrament', 'communion', 'baptis', 'eucharist',
+  ];
+  return markers.some((m) => lower.includes(m));
+}
+
+/** "God" as exclamation / filler (not theology) — e.g. "god would it be gross". */
+function isCasualGodInterjection(text) {
+  const lower = stripDiacritics(text.toLowerCase());
+  return (
+    /\bgod[,!]/i.test(lower)
+    || /\bgod\s+(would|that's|that is|damn|dammit|this|it|what|i|we|you)\b/i.test(lower)
+    || /\boh\s+god\b/i.test(lower)
+    || /\bmy\s+god\b/i.test(lower)
+    || /\bfor\s+god'?s\s+sake\b/i.test(lower)
+  );
+}
+
+/** Combat / GV mechanics context so religion filter ignores casual "god". */
+function hasGameplayCombatContext(text) {
+  const lower = stripDiacritics(text.toLowerCase());
+  return (
+    /\b(weapon|weapons|damage|swing|stab|slash|block|parry|shield|sword|mace|axe|bow|spear|polearm|dagger|backstab|hitting)\b/i.test(lower)
+    || /\b(light|heavy)\s+(armou?r)\b/i.test(lower)
+    || /\b(hit|hits|behind|pvp|combat|duel|fight|fighting|siege|loot|looting)\b/i.test(lower)
+    || /\b(party|parties|alliance|alliances|guild|guilds|nation|nations)\b/i.test(lower)
+    || /\b(glory|reputation|tier\s*[0-9]|non-targeting|character|stats)\b/i.test(lower)
+    || /\bgloria\s+victis\b|\bgv\b/i.test(lower)
+  );
+}
+
+/** Skip counting token "god"/"gods" toward religion ratio when clearly game talk + casual usage. */
+function shouldSkipReligionGodToken(fullText, word) {
+  const w = (word || '').toLowerCase();
+  if (w !== 'god' && w !== 'gods') return false;
+  if (hasStrongReligionMarker(fullText)) return false;
+  const lower = stripDiacritics(fullText.toLowerCase());
+  if (/\bgod\s*(tier|roll|rng)\b/i.test(lower) && hasGameplayCombatContext(fullText)) return true;
+  if (isCasualGodInterjection(fullText) && hasGameplayCombatContext(fullText)) return true;
+  return false;
+}
+
 // Combined: should we treat message as religion/politics (ratio, ideological phrase, or obvious religion/politics phrase)
 function shouldTriggerReligionPolitics(text) {
   if (!text || typeof text !== 'string') return false;
@@ -1204,6 +1257,7 @@ function isMostlyReligionPolitics(text) {
   if (words.length < RELIGION_POLITICS_MIN_WORDS) return false;
   let triggerCount = 0;
   for (const w of words) {
+    if (shouldSkipReligionGodToken(text, w)) continue;
     if (wordMatchesTriggerWord(w) || wordContainsGoy(w)) triggerCount++;
   }
   const ratio = triggerCount / words.length;

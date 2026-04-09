@@ -1,4 +1,212 @@
-# One term per line (or comma-separated). Terms here = message won't trigger religion/politics filter.
-# Gloria Victis / game context – add more from https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki
-# (In-code list already includes: state of war, nations, midland, azebia, sangmar, crafting, etc.)
+# One term per line (or comma-separated). If a line appears anywhere in the message, religion/politics redirect is skipped.
+# Curated from main hubs + deeper pages on:
+#   https://wiki.gloriavictisgame.com/index.php/Main_Page (Combat, Weapons, etc.)
+#   https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki (navigation + Combat + Crafting)
+#   https://gloriavictis.fandom.com/wiki/Category:Browse (top-level pages + subcats via api.php categorymembers)
+#   https://gloriavictis.fandom.com/wiki/Special:Categories (allcategories API — game cats only)
+# Add more lines anytime; avoid very generic English that matches real-world politics chat alone.
 
+# --- Official dev wiki (main + linked feature pages) ---
+character statistics
+video combat guide
+leveling guide
+survival instinct
+patronus nobilis
+feudal system
+guild levels
+barn manager
+renovation kit
+frontier guard
+frontier guard token
+player stalls
+gathering resources
+fast travel
+state of war
+gloria victis
+non-targeting
+treasure hunting
+a real treasure
+tracked quests
+combat mode
+directional attacks
+directional blocking
+melee combat
+non-target combat
+archery
+damage types
+damage effects
+item quality
+item tiers
+weapon block resistance
+shield resistance
+perfect block
+block indicator
+chambering
+feinting
+feint
+shield bash
+ally damage
+cleave
+reaper
+marksman
+not on my watch
+huntsman
+unstoppable
+throwing weapons
+weapon mastery
+character development
+mass combat
+stamina
+bludgeoning
+slashing
+piercing
+quiver
+bowyer
+simple bow
+reflex bow
+longbow
+
+# --- Fandom wiki hub navigation (distinctive game systems) ---
+unique chests
+guilds system
+structure upgrades
+player titles
+glory & reputation
+interactive map
+tutorials & guides
+historical inspirations
+funny bugs
+interfaces
+glory and reputation
+
+# --- Fandom Combat / realm topics (game PvP) ---
+non-target based
+techniques
+jousting
+single combat
+realm vs realm
+sieges
+trebuchet
+war machines
+stamina consumption
+
+# --- Fandom Crafting professions (distinctive names) ---
+husbandry
+culinary arts
+tailoring
+leatherworking
+armoursmithing
+weapon forging
+woodworking
+hunting and forestry
+herbalism
+alchemy
+mining and metallurgy
+artificing
+engineering profession
+
+# --- Fandom Category:Browse tree (hub pages, tutorials, shops, recipes, NPCs — API + article text) ---
+basics tutorial
+crafting tutorial
+earning money
+weapon forging
+eleganthriel's guide
+eleganthriel's quick guide
+guide to armorsmithing
+armed mode
+unarmed mode
+skillbar
+attribute points
+experience bar
+purse icon
+limestone
+bloomery
+bloomery slag
+doped pyrite
+roasted limonite
+roasted doped pyrite
+maille 3in1
+maille 5in1
+dense maille 3in1 riveted
+hard steel ingot
+soft steel ingot
+semi-hard steel ingot
+iron ore smelting in bloomery
+iron ore roasting
+leather glueing
+hide fleshing
+hide shaving
+crystals grinding
+steel umbo
+kettle hat
+cuirass with chainmail
+dziwer
+footman's shield
+kite shield
+pilgrim's staff
+townsguard's simple cerveillere
+cerveillere
+simple skullcap
+ailette
+sailors shirt recipe
+heavy armours castle shop
+heavy armours keep shop
+heavy armours town shop
+light armours shop castle
+light armours shop keep
+light armours shop town
+medium armours shop castle
+medium armours shop keep
+medium armours shop town
+weapons castle shop
+weapons keep shop
+weapons town shop
+mereley
+brigand
+corsair
+smuggler
+young raider
+elder robber
+rebel peasant
+young brigand
+man-at-arms morningstar
+marauder's pick
+mercenary's pick
+battle shestopior
+boat hook
+karleonian mace
+karleonian pick
+guardsman's morningstar
+bandit's hammer
+brigand's hammer
+brigand's studdedclub
+deserter's pick
+peasant's studdedclub
+soldier's pick
+thug's hammer
+cooking and herbalism
+forestry and farming
+herbalism and alchemy
+tailoring and leatherworking
+crafting components
+
+# --- Fandom Special:Categories (weapon & craft groupings; omit axes/bows — substring false positives) ---
+blunt weapons
+bardiches
+spears
+swords
+daggers
+knives
+protecture tincture
+jewelery
+npcs
+
+# --- Official wiki weapon tables (rare spellings = low IRL collision) ---
+bardiche
+guisarme
+glaive
+halberd
+macepick
+lordly haven halberd
+hordun spear
+rusted crusher
