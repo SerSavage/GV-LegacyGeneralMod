@@ -1950,7 +1950,8 @@ client.once('ready', () => {
     setInterval(runRssPoll, RSS_POLL_INTERVAL_MS);
   }
 
-  // Second RSS (official site / rss.app) → same channel; daily poll; max 2 newest unseen per run. First run bootstraps seen IDs only (no backlog spam).
+  // Second RSS (official site / rss.app) → same channel; daily poll; max N newest unseen per run.
+  // First poll after deploy: post up to N newest items in the feed, then mark every item currently in the feed as seen so older entries are not dripped out day by day.
   if (RSS_FEED_URL_2 && ANNOUNCEMENT_CHANNEL_ID) {
     const runOfficialNewsPoll = async () => {
       try {
@@ -1966,13 +1967,21 @@ client.once('ready', () => {
 
         const items = [...(feed.items || [])];
         if (!rssSeen.has(RSS_OFFICIAL_BOOTSTRAP_KEY)) {
-          for (const item of items) {
-            const key = officialNewsItemKey(item);
-            if (key) rssSeen.add(key);
-          }
+          const withKeys = items
+            .map((item) => ({ item, key: officialNewsItemKey(item) }))
+            .filter(({ key }) => key);
+          withKeys.sort((a, b) => itemPubTime(b.item) - itemPubTime(a.item));
+          const toPost = withKeys.slice(0, RSS_FEED_2_MAX_POSTS);
+          for (const { key } of withKeys) rssSeen.add(key);
           rssSeen.add(RSS_OFFICIAL_BOOTSTRAP_KEY);
           saveRssSeen(rssSeen);
-          if (DEBUG) console.log('[rss2] Bootstrapped official GV news feed (marked current items seen; no posts)');
+          let posted = 0;
+          for (let i = toPost.length - 1; i >= 0; i--) {
+            await sendAnnouncementRssItem(channel, toPost[i].item);
+            posted++;
+          }
+          if (posted > 0) console.log(`[rss2] Initial sync: posted ${posted} item(s); ${withKeys.length} current feed entr${withKeys.length === 1 ? 'y' : 'ies'} marked seen (no backlog on later checks)`);
+          else if (DEBUG) console.log('[rss2] First run: feed empty or no valid item keys; bootstrap only');
           return;
         }
 
