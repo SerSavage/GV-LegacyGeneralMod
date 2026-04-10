@@ -5,6 +5,9 @@
 #   https://gloriavictis.fandom.com/wiki/Category:Browse (top-level pages + subcats via api.php categorymembers)
 #   https://gloriavictis.fandom.com/wiki/Special:Categories (allcategories API — game cats only)
 # Add more lines anytime; avoid very generic English that matches real-world politics chat alone.
+# Community pings (religion/politics skip only — Balkans/geopolitical/slurs still run first in code):
+ser savage
+sir savage
 
 # --- Official dev wiki (main + linked feature pages) ---
 character statistics

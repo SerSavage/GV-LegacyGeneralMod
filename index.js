@@ -29,14 +29,12 @@ const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
 // Bot-moved gv-general posts land here so #off-topic chat flow stays clean; message body still tells users to use off-topic
 const MOVED_BY_BOT_CHANNEL_ID = String(process.env.MOVED_BY_BOT_CHANNEL_ID || '1485211311070511225');
-// Severe CSAM/grooming-related text in gv-general → same hold channel + TMFIAR + mandatory ✅ from author (no Savage/unban bypass).
+// Severe CSAM/grooming-related text in gv-general → same hold channel + TMFIAR + mandatory ✅ from author (same rules for all users).
 const CSAM_GROOMING_WORDS_FILE = process.env.CSAM_GROOMING_WORDS_FILE || path.join(process.cwd(), 'assets', 'csam-grooming-triggers.txt');
 const CSAM_ACK_EMOJI = '✅';
 const CSAM_ACK_COLLECTOR_MS = 7 * 24 * 60 * 60 * 1000; // wait up to 7 days for first ✅ from author
 // User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
-// User ID whose media (GIFs, images, videos, tenor.com links) with religious/political content in the message text get moved to #off-topic
-const MEDIA_RELIGION_OFFTOPIC_USER_ID = process.env.MEDIA_RELIGION_OFFTOPIC_USER_ID || '1107129004642799616';
 // If configured authors target Ser/SirSavage (mention or evasion spelling), bot pings them with NOOBMARS_MENTION_REPLY.
 const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
   String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,405079515765800979')
@@ -511,7 +509,8 @@ const SAFE_CONTEXT_BASE = [
   'emperor', 'represent',
   'jc', 'jarnclan', 'jarn',
   'destiny',
-  'savage', // common in usernames (e.g. Ser-UNBAN-THE-COMMUNITY-Savage) and casual use – don't trigger religion/politics
+  // Pings / display names — only skips religion-politics + off-topic *after* Balkans/geopolitical/slurs (those run first).
+  'savage', 'sersavage', 'sirsavage', 'cassander',
   'dipshit', // mod-style scolding (e.g. "for him dipshit") – don't trigger
   'good', // common word (agreement/approval); if in words.txt would trigger on single "Good" – skip
   'mad men', 'mad man', 'lunatics', 'lunatic', // idiom/quote (e.g. "nation filled with mad men and lunatics") – skip off-topic and religion/politics
@@ -973,6 +972,22 @@ function hasGeopoliticalHardRedirect(text) {
   return false;
 }
 
+/** IRL Balkans / former Yugoslavia travel & history (not GV lore). Before safe-context; skip if clearly only language-learning. */
+function hasBalkansRealWorldOffTopicRedirect(text) {
+  if (!text || typeof text !== 'string') return false;
+  if (hasLanguageLearningContext(text)) return false;
+  const lower = text.toLowerCase();
+  if (lower.includes('bosnia') || lower.includes('bosnian') || lower.includes('bosniak')) return true;
+  if (lower.includes('mostar') || lower.includes('sarajevo') || lower.includes('srebrenica')) return true;
+  if (/\b(serbia|serbian|serbs?)\b/.test(lower)) return true;
+  if (/\b(croatia|croatian|croats?)\b/.test(lower)) return true;
+  if (lower.includes('yugoslav') || /\bbalkans?\b/.test(lower)) return true;
+  if (/\b(kosovo|montenegro|skopje|tirana|belgrade|beograd|ljubljana)\b/.test(lower)) return true;
+  if (lower.includes('archduke') || lower.includes('franz ferdinand')) return true;
+  if (/\bbosnian\s+serb\b|\bserb\s+nationalist\b|\bnationalist\s+serb\b/.test(lower)) return true;
+  return false;
+}
+
 // Check if message contains any goy-related term (religion filter)
 function hasGoyTerm(text) {
   if (!text || typeof text !== 'string') return false;
@@ -1018,6 +1033,7 @@ const IDEOLOGICAL_TERMS = new Set([
   'proletariat', 'bourgeoisie', 'capitalism', 'capitalist', 'leftist', 'leftism', 'tankie', 'tankies',
   'fascism', 'fascist', 'fascists', 'nazism', 'nazi', 'nazis', 'neo-nazi', 'neo-nazis', 'neonazi', 'neonazis',
   'supremacist', 'supremacism', 'white supremacy', 'white supremacist', 'ethnonationalism', 'nativism', 'nativist',
+  'nationalist', 'nationalists', 'nationalism',
   'xenophobia', 'xenophobic', 'authoritarianism', 'authoritarian', 'ultranationalism', 'reactionary',
   'redpilled', 'redpill', 'bluepilled', 'bluepill', 'blackpilled', 'blackpill', 'libtard',
   // 'based' / 'woke' omitted — common slang; false positives on "woke up the cat", etc.
@@ -1448,16 +1464,6 @@ async function downloadUrlToFile(url, filePath) {
   if (!fs.existsSync(path.dirname(filePath))) fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, buf);
   return filePath;
-}
-
-// Exclude specific users from message deletion and meme/GIF reply (e.g. admin with "Savage"/"unban" in name). They still get :soon: etc.; we just never delete their msg or post Chronicus/GIF.
-function isExcludedFromDeleteAndMeme(message) {
-  const name = [
-    message.author?.username,
-    message.author?.globalName,
-    message.member?.displayName,
-  ].filter(Boolean).join(' ').toLowerCase();
-  return /savage|unban/.test(name);
 }
 
 /** True if message text/embeds/attachments reference a blocked Tenor/GIF id (substring match). */
@@ -2229,30 +2235,12 @@ client.on('messageCreate', async (message) => {
   }
 
   if (messageHasBlockedMediaId(message)) {
-    if (!isExcludedFromDeleteAndMeme(message)) {
-      await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
-      if (DEBUG) console.log(`[blocked-media] ${message.author.tag}`);
-    }
+    await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
+    if (DEBUG) console.log(`[blocked-media] ${message.author.tag}`);
     return;
   }
 
   if (await handleSpamWatchVolumeFlush(message)) return;
-
-  // Specific user: move their media (GIF/image/video or tenor.com links) when the message text contains religion/politics → hold channel
-  if (message.author.id === MEDIA_RELIGION_OFFTOPIC_USER_ID) {
-    const hasImageOrVideo = message.attachments?.some(
-      a => IMAGE_CONTENT_TYPES.test(a.contentType || '') || VIDEO_CONTENT_TYPES.test(a.contentType || '') || IMAGE_EXTENSIONS.test(a.name || '')
-    );
-    const hasTenorLink = message.content && message.content.includes('tenor.com');
-    const hasMedia = hasImageOrVideo || hasTenorLink;
-    const hasReligionPolitics = message.content && shouldTriggerReligionPolitics(message.content);
-    if (hasMedia && hasReligionPolitics) {
-      const randomGifMedia = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-      await deleteInGeneralAndForwardMovedHold(message, randomGifMedia);
-      if (DEBUG) console.log(`[media-religion] Moved ${message.author.tag} media+religion/politics to hold channel`);
-      return;
-    }
-  }
 
   if (!message.content) {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
@@ -2263,7 +2251,6 @@ client.on('messageCreate', async (message) => {
 
   // Harassment/race-bait evasion (e.g. "de lusional ... black plague player ... big fella") → hold channel.
   if (hasHarassmentRaceBaitEvasion(message.content, message.author.id)) {
-    if (isExcludedFromDeleteAndMeme(message)) return;
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
@@ -2345,7 +2332,6 @@ client.on('messageCreate', async (message) => {
 
   // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video. Delete in gv-general, repost to hold channel.
   if (hasSpamSlur(message.content)) {
-    if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
     const userId = message.author.id;
     const repeated = isRepeatedSlurOffender(userId);
     recordSlurReply(userId);
@@ -2357,21 +2343,25 @@ client.on('messageCreate', async (message) => {
 
   // Racial/religious stereotype bait (e.g. "isn't everyone south of the border Mexican?") — hold channel, no safe-context bypass
   if (hasStereotypeRaceReligionRedirect(message.content)) {
-    if (isExcludedFromDeleteAndMeme(message)) return;
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
   // Psychiatric / disability slurs (e.g. "schizo", "they're autistic") — hold channel, no safe-context bypass
   if (hasMedicalPsychiatricInsult(message.content)) {
-    if (isExcludedFromDeleteAndMeme(message)) return;
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
   // Geopolitical keywords (states, NATO, UN, sanctions, invasion, regime, …) — hold channel even if message also has guild/nation safe-context
   if (hasGeopoliticalHardRedirect(message.content)) {
-    if (isExcludedFromDeleteAndMeme(message)) return;
+    const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+    await deleteInGeneralAndForwardMovedHold(message, randomGif);
+    return;
+  }
+
+  // IRL Balkans / former Yugoslavia discussion (travel, history, identity) — same hold flow as geopolitical
+  if (hasBalkansRealWorldOffTopicRedirect(message.content)) {
     const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardMovedHold(message, randomGif);
     return;
@@ -2385,7 +2375,6 @@ client.on('messageCreate', async (message) => {
 
   // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, repost to hold channel.
   if (hasOffTopicPhrase(message.content)) {
-    if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
@@ -2401,7 +2390,6 @@ client.on('messageCreate', async (message) => {
   }
 
   // Religion/politics/ideological: random GIF. Delete in gv-general, repost to hold channel.
-  if (isExcludedFromDeleteAndMeme(message)) return; // e.g. admin with Savage/unban in name — no delete, no meme
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
   await deleteInGeneralAndForwardMovedHold(message, randomGif);
 });
