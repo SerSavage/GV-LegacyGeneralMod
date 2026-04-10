@@ -593,12 +593,12 @@ function buildOffTopicPhrases() {
     add(`fuck a ${b}`);
     add(`fuck ${b}`);
   }
-  // "fuck a [race/nat] [person]", "fuck [race/nat] [person]", "[race/nat] [person]" (vulgar objectifying)
+  // "fuck a [race/nat] [person]", "fuck [race/nat] [person]" — bare "[race] girl/guy" is omitted so harmless refs
+  // (e.g. Willy Wonka / film) are not flagged; explicit fuck-variants still catch objectifying lines.
   for (const r of raceNat) {
     for (const p of person) {
       add(`fuck a ${r} ${p}`);
       add(`fuck ${r} ${p}`);
-      add(`${r} ${p}`);
     }
     add(`fuck a ${r}`);
     add(`fuck ${r}`);
