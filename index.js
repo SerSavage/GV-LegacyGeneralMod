@@ -96,6 +96,7 @@ const RSS_FEED_URL_2 = process.env.RSS_FEED_URL_2 || 'https://rss.app/feeds/TKc8
 const RSS_FEED_2_POLL_INTERVAL_MS = Math.max(60 * 60 * 1000, parseInt(process.env.RSS_FEED_2_POLL_INTERVAL_MS, 10) || 24 * 60 * 60 * 1000); // default 24 h
 const RSS_FEED_2_MAX_POSTS = Math.max(1, Math.min(5, parseInt(process.env.RSS_FEED_2_MAX_POSTS, 10) || 2));
 const RSS_OFFICIAL_BOOTSTRAP_KEY = '__rss_official_gv_news_bootstrapped__';
+const RSS_2_CHANNEL_HISTORY_LIMIT = Math.min(500, Math.max(40, parseInt(process.env.RSS_2_CHANNEL_HISTORY_LIMIT, 10) || 200));
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
 const NEW_ARRIVALS_CHANNEL_ID = String(process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'); // #new-arrivals: welcome video + user tag (join or first role)
 // Channel IDs for welcome message links (Welcome + server-roles). Override with env if needed.
@@ -1850,6 +1851,60 @@ const RSS_FETCH_HEADERS = {
   'Referer': 'https://www.google.com/',
 };
 
+/** Normalize article URLs so channel text and RSS items match after redeploy (dedupe). */
+function normalizeAnnouncementRelayUrl(href) {
+  if (!href || typeof href !== 'string') return '';
+  let s = href.trim();
+  const trailing = /[.,;:!?)>]+$/;
+  s = s.replace(trailing, '');
+  try {
+    const u = new URL(s);
+    if (/gloriavictisgame\.com$/i.test(u.hostname)) u.protocol = 'https:';
+    u.hash = '';
+    let p = u.pathname;
+    if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+    u.pathname = p || '/';
+    return u.href.toLowerCase();
+  } catch {
+    return s.toLowerCase();
+  }
+}
+
+/** Collect http(s) URLs from recent announcement-channel messages (body + embeds) for RSS dedupe. */
+async function collectRelayedUrlsFromChannel(channel, maxToScan) {
+  const out = new Set();
+  const urlRe = /https?:\/\/[^\s<>)\]'"]+/gi;
+  const addFromText = (text) => {
+    if (!text || typeof text !== 'string') return;
+    urlRe.lastIndex = 0;
+    let m;
+    while ((m = urlRe.exec(text)) !== null) {
+      const n = normalizeAnnouncementRelayUrl(m[0]);
+      if (n) out.add(n);
+    }
+  };
+  const cap = Math.min(500, Math.max(30, maxToScan));
+  let remaining = cap;
+  let before = undefined;
+  while (remaining > 0) {
+    const batchSize = Math.min(100, remaining);
+    const msgs = await channel.messages.fetch({ limit: batchSize, before });
+    if (msgs.size === 0) break;
+    for (const msg of msgs.values()) {
+      addFromText(msg.content);
+      for (const em of msg.embeds) {
+        if (em.url) addFromText(em.url);
+        if (em.description) addFromText(em.description);
+        if (em.title) addFromText(em.title);
+      }
+    }
+    before = msgs.last()?.id;
+    remaining -= msgs.size;
+    if (msgs.size < batchSize) break;
+  }
+  return out;
+}
+
 // --- Discord bot ---
 const client = new Client({
   intents: [
@@ -1965,13 +2020,26 @@ client.once('ready', () => {
         const channel = await client.channels.fetch(ANNOUNCEMENT_CHANNEL_ID);
         if (!channel?.isTextBased()) return;
 
+        const relayedUrls = await collectRelayedUrlsFromChannel(channel, RSS_2_CHANNEL_HISTORY_LIMIT);
+        const itemLinkRelayed = (item) => {
+          const u = normalizeAnnouncementRelayUrl(item.link || '');
+          return Boolean(u && relayedUrls.has(u));
+        };
+
         const items = [...(feed.items || [])];
+        for (const item of items) {
+          const key = officialNewsItemKey(item);
+          if (key && itemLinkRelayed(item)) rssSeen.add(key);
+        }
+        saveRssSeen(rssSeen);
+
         if (!rssSeen.has(RSS_OFFICIAL_BOOTSTRAP_KEY)) {
           const withKeys = items
             .map((item) => ({ item, key: officialNewsItemKey(item) }))
             .filter(({ key }) => key);
           withKeys.sort((a, b) => itemPubTime(b.item) - itemPubTime(a.item));
-          const toPost = withKeys.slice(0, RSS_FEED_2_MAX_POSTS);
+          const notYetInChannel = withKeys.filter((x) => !itemLinkRelayed(x.item));
+          const toPost = notYetInChannel.slice(0, RSS_FEED_2_MAX_POSTS);
           for (const { key } of withKeys) rssSeen.add(key);
           rssSeen.add(RSS_OFFICIAL_BOOTSTRAP_KEY);
           saveRssSeen(rssSeen);
@@ -1980,14 +2048,15 @@ client.once('ready', () => {
             await sendAnnouncementRssItem(channel, toPost[i].item);
             posted++;
           }
-          if (posted > 0) console.log(`[rss2] Initial sync: posted ${posted} item(s); ${withKeys.length} current feed entr${withKeys.length === 1 ? 'y' : 'ies'} marked seen (no backlog on later checks)`);
+          if (posted > 0) console.log(`[rss2] Initial sync: posted ${posted} item(s); ${withKeys.length} current feed entr${withKeys.length === 1 ? 'y' : 'ies'} marked seen; skipped ${withKeys.length - notYetInChannel.length} already in <#${ANNOUNCEMENT_CHANNEL_ID}>`);
+          else if (notYetInChannel.length === 0 && withKeys.length > 0) console.log(`[rss2] Initial sync: no new posts (${withKeys.length} feed item(s) already in <#${ANNOUNCEMENT_CHANNEL_ID}>); bootstrap complete`);
           else if (DEBUG) console.log('[rss2] First run: feed empty or no valid item keys; bootstrap only');
           return;
         }
 
         const unseen = items
           .map((item) => ({ item, key: officialNewsItemKey(item) }))
-          .filter(({ key }) => key && !rssSeen.has(key))
+          .filter(({ key, item: it }) => key && !rssSeen.has(key) && !itemLinkRelayed(it))
           .sort((a, b) => itemPubTime(b.item) - itemPubTime(a.item))
           .slice(0, RSS_FEED_2_MAX_POSTS);
 
