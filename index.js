@@ -681,6 +681,7 @@ const POOR_SAVAGE_VIDEO_PATH = process.env.POOR_SAVAGE_VIDEO_PATH || path.join(p
 function normalizePoorSavageEvasion(text) {
   const t = stripDiacritics(String(text || '').toLowerCase());
   return t
+    .replace(/:regional_indicator_s:\s*avage\b/gi, ' savage')
     .replace(/\u{1F1F8}\s*avage\b/giu, ' savage')
     .replace(/[\$＄]\s*avage\b/gi, ' savage')
     .replace(/\s{2,}/g, ' ');
