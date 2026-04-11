@@ -677,10 +677,20 @@ const VIDEO_PATH = process.env.VIDEO_PATH || (() => {
 // "Poor … Savage" reply in gv-general (override path on Render; bundle mp4 in assets for deploy)
 const POOR_SAVAGE_VIDEO_PATH = process.env.POOR_SAVAGE_VIDEO_PATH || path.join(process.cwd(), 'assets', 'The_Way_We_Raid_Gloria_Victis.mp4');
 
-/** e.g. "Poor unban Savage", "Poor little Savage" — requires at least one character between Poor and Savage */
+/** Normalize $ / ＄ / regional-indicator S (U+1F1F8) used instead of "S" in "Savage" for Poor-Savage meme detection. */
+function normalizePoorSavageEvasion(text) {
+  const t = stripDiacritics(String(text || '').toLowerCase());
+  return t
+    .replace(/\u{1F1F8}\s*avage\b/giu, ' savage')
+    .replace(/[\$＄]\s*avage\b/gi, ' savage')
+    .replace(/\s{2,}/g, ' ');
+}
+
+/** e.g. "Poor unban Savage", "Poor little Savage", "Poor little $avage" — requires at least one character between Poor and Savage */
 function hasPoorSomethingSavageTrigger(text) {
   if (!text || typeof text !== 'string') return false;
-  const m = text.match(/\bpoor\s+(.+?)\s+\bsavage\b/is);
+  const folded = normalizePoorSavageEvasion(text);
+  const m = folded.match(/\bpoor\s+(.+?)\s+\bsavage\b/is);
   if (!m) return false;
   const mid = m[1].replace(/\s+/g, ' ').trim();
   return mid.length >= 1 && mid.length <= 400;
