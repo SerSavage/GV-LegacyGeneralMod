@@ -1255,7 +1255,11 @@ const REGION_OR_SERVER_ZONE_WORDS = new Set([
   'kr', 'jp', 'cn', 'tw', 'hk', 'sg', 'ph', 'th', 'vn', 'id', 'my', 'nz',
 ].map(w => w.toLowerCase()));
 // Never count these as religion/politics trigger words (common words / game terms that match leaders or lists by substring)
-const TRIGGER_WORD_IGNORE = new Set([...['good', 'goods', 'mod', 'mods'].map(w => w.toLowerCase()), ...REGION_OR_SERVER_ZONE_WORDS]);
+// nation / nations — GV faction chat ("nation chat", "which nation"); words.txt lists bare "nation" as political otherwise.
+const TRIGGER_WORD_IGNORE = new Set([
+  ...['good', 'goods', 'mod', 'mods', 'nation', 'nations'].map((w) => w.toLowerCase()),
+  ...REGION_OR_SERVER_ZONE_WORDS,
+]);
 function wordMatchesTriggerWord(word) {
   if (!word) return false;
   if (TRIGGER_WORD_IGNORE.has(word.toLowerCase())) return false;
