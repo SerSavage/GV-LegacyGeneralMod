@@ -36,12 +36,15 @@ const CSAM_ACK_COLLECTOR_MS = 7 * 24 * 60 * 60 * 1000; // wait up to 7 days for 
 // User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
 // If configured authors target Ser/SirSavage (mention or evasion spelling), bot pings them with NOOBMARS_MENTION_REPLY.
+// One author (NOOBMARS_POOR_YOU_AUTHOR_ID) also triggers on the phrase "Poor you".
 const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
-  String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,405079515765800979')
+  String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,405079515765800979,506091599420194817')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
 );
+// This user also triggers N00bmars reply when they type "Poor you" (same flow as Savage / target mention).
+const NOOBMARS_POOR_YOU_AUTHOR_ID = String(process.env.NOOBMARS_POOR_YOU_AUTHOR_ID || '506091599420194817');
 const NOOBMARS_TRIGGER_TARGET_ID = String(process.env.NOOBMARS_TRIGGER_TARGET_ID || '275603696036085760');
 const NOOBMARS_MENTION_REPLY = process.env.NOOBMARS_MENTION_REPLY || 'N00bmars';
 const DELUSION_STRICT_USER_ID = String(process.env.DELUSION_STRICT_USER_ID || '188328879180480512');
@@ -58,10 +61,18 @@ function hasSavageNameTrigger(text) {
   if (/s[ei]r+s+a?v+a?g+e?/.test(compact)) return true;
   return /s+a+v+a?g+e+/.test(compact);
 }
+function hasPoorYouNoobmarsTrigger(message) {
+  if (!message?.author?.id || !message.content) return false;
+  if (String(message.author.id) !== NOOBMARS_POOR_YOU_AUTHOR_ID) return false;
+  const t = stripDiacritics(message.content.toLowerCase());
+  return /\bpoor\s+you\b/.test(t);
+}
+
 function shouldReplyNoobmars(message) {
   if (!message || !message.author) return false;
   if (!NOOBMARS_TRIGGER_AUTHOR_IDS.has(String(message.author.id))) return false;
   if (message.mentions?.users?.has(NOOBMARS_TRIGGER_TARGET_ID)) return true;
+  if (hasPoorYouNoobmarsTrigger(message)) return true;
   return hasSavageNameTrigger(message.content);
 }
 function getNoobmarsReplyPayload(authorId) {
