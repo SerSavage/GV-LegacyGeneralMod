@@ -1,0 +1,361 @@
+# Gloria Victis legacy patch vocabulary (religion/politics safe-context only; Balkans/geopolitical/slurs still run first).
+# Regenerate: node scripts/extract-gv-legacy-index.mjs path/to/GVLegacyBotIndexing.txt
+# Source: GVLegacyBotIndexing.txt
+# Terms: 356
+
+a player can spawn one cart by talking with an npc called the siege engineer that stands around each barracks.
+added 2 new flags to concentrate the fights near the gates: market district and temple district.
+added a lot of detail objects and obstacles to make the fight area more interesting.
+added a new achievement and title for killing the boss from the new guild raid event.
+added a new feature connected with the lycanthropy buff that can only be triggered in the loot zone.
+added a notification for the player destroying a structure during the siege valley of death mode.
+added minimap icon to siege quartermaster to make it easier to find him
+added more light sources to the location.
+added the werewolf slayer memorials by the werewolf altars.
+adjusted position of flying minerals and trees.
+adjusted positions of some hanged men and corpses to match the new tree models.
+alchemists
+announcement we
+any other player may pick up and use a dropped banner, including enemies
+aqua regia
+armoured landsknecht
+armoured landsknecht set
+atmosphere
+auction house
+auction houses
+banished crusade
+banner mechanics
+banners can not be carried while mounted.
+banners in inventory cannot be looted.
+based on our data since the last update, the yield of some resources has been increased.
+based on player reports, we fixed an edge case related to the overhead attack that was dealing no damage.
+bastion need
+berserk skin
+berserk skin set in
+berserk skin weapons pack following
+best ongoing polish game
+bosses we
+building mortar
+building resources
+building resources to
+building stone
+building wood
+camp master
+caravan brigand
+caravan spy
+caravanserai
+castle audunstede
+castle skergard
+catacombs nitrite
+challenging
+changed lootable chests at griffin's raid and the banished crusade, from now they will use the roll system similar to loot bags.
+changed the amount of mount rejuvenation elixir to a fixed value.
+changed the chances of a successful and unsuccessful renovation and from now on, the chances for successful renovation are higher.
+collections
+common reinforcement
+common reinforcement costs 5 silver (previously 10 iron)
+common renovation
+common renovation kit
+common renovation kit requires 5 meteoric iron (previously 5 meteoric iron)
+common renovation kit restores 20% of base durability (previously 20%)
+community streamers
+contact koma
+contribution points
+controlled locations
+controlled locations we
+crafting chance
+crafting experience boost card
+death siege
+death siege mode
+death tournament
+death tournament siege map since
+decent item reinforcements
+decent reinforcement costs 15 silver (previously 10 silver)
+decent renovation
+decent renovation kit
+decent renovation kit requires 15 meteoric iron (previously 25 meteoric iron)
+decent renovation kit restores 25% of base durability (previously 20%)
+decreased the time of excavation digging to 120 seconds from 300 seconds
+development
+digital dragons
+digital dragons nominee we
+doom tektite
+drop the banner on the ground to fight.
+dukla legacy
+durability
+durability changes
+dying light
+each interaction with wagon is restarting that timer, which means each material add or collection is counted as an interaction.
+elite quilted canvas
+enemy technology caravans
+event we
+failing does not destroy the item.
+farming aid
+fish soup
+fix to weird-looking hair during the night and in foggy weather zones.
+fixed a bug causing that destroying buildings wasn’t counted properly for all factions.
+fixed a bug related to cooking and herbalism experience gained by bastion delivery.
+fixed a treasure quest location near werewolf’s altar in the ismir frontier region.
+fixed an edge case that caused the catapult hit to deal double damage.
+fixed an issue causing some of the quest npcs to spawn too frequently.
+fixed another edgecase that could lead to invisibility of other players
+fixed bug with a healing effect on mineralizing brew and kvass.
+fixed displaying the crafting chance of an item.
+fixed error in quest boards when players leave and rejoin the same quest.
+fixed exploitable windows at abbey where attackers could kill guards through them.
+fixed guild announcement characters limit. by mistake, it was 250, after the fix it’s 500.
+fixed invisible colliders at hordun temple that could lead to blocking siege machines.
+fixed palms and trees falling into the lanterns on the old volcano.
+fixed position of "exchange map fragments for mysterious scroll" event and explorer position.
+fixed positions of the resources that were flying or underground.
+fixed problems with spawning quest and event npcs.
+fixed quest board event farming aid for midland and ismir nation.
+fixed skins for throwing rocks.
+fixed some bridges at locations (skogar, dimar) that could block siege machines.
+fixed stone keeps. npc could walk through closed doors, walls and columns.
+fixed the chest drop at the griffin’s company.
+fixed the exit door at the banished crusade raid.
+fixed the ferryman teleportation quest.
+fixed the position of coal that was stuck in a wooden structure and it was not possible to gather it.
+fixed the recipe for the fish soup. the ingredients didn’t fit in the recipe ui.
+fixed the storehouse drop from the chest at aquitania.
+fixed the visibility of feet on karleonian chainmail leg armor.
+fixes to colliders and terrain around the werewolf altars.
+foreign technology
+foreign technology foreign technology
+fortification building points
+free building
+free building choose
+from now on placing tents in the werewolf altar location will not be possible.
+from now on the reinforcing window will tell you about what impacts the chance for successful reinforcing.
+from now on, castles twinfall, leaktown and the order of the original faith's keep received additional link connections.
+from now on, events such a werewolf, banished crusade, castle raid, griffin's company are rising the guild activity percent.
+from now on, the siege events happening during servers’ nightlock will always be three-way sieges.
+from now on, the siege mode vod is forced at 8 p.m. of the local time of each server
+from the warehouse player is picking up a big pack with arrows and once he placed it in the dedicated container, he will be divided into two small packs.
+frontier tokens
+further door synchronization improvements.
+further improvements in the market backend optimization few tweaks to the ui.
+generating
+gloria victis
+gloria victis launch trailer
+gloria victis state
+glory level
+glory quartermasters
+glory season
+glory season the new glory
+glory vendor
+graphical upgrade today
+great hunt
+guard commander
+guild castle
+guild castles
+guild castles very
+guild dungeon
+guild islands
+guild isle settings we
+guild isles
+guild officer
+guild ownership
+guild owning
+guild points
+guild tech
+guild technologies
+guild technology
+guild technology experience
+guild technology packs
+guild technology with
+haddah castle
+hello community
+herbs have been repositioned on the world map to more suitable and logical places.
+holmridge and holmridge 2 will be merged into holmridge
+holmridge share
+hordun temple
+if the player is in unarmed mode, he will pick up a pack with the arrows.
+if the reinforcement attempt fails on an item between +0 and +3, the item does not lose a quality level.
+if the reinforcement attempt fails on an item of +4 or higher quality, the item loses one 1 quality level.
+immortalized
+implementing
+improved the translations for the new mount ageing system making it intuitive.
+improvement in the party looting queue. from now on, the winner will be receiving the item that is the most valuable based on the average market price.
+improvements
+improvements have been made related to ping compensation of kicking mechanics.
+improvements in the calculation of points for destroying structures during the siege valley of death mode.
+increased the cooldown for quest boards related to crafting for beginners from 15 minutes to 2 hours.
+increased the hp of gate doors and barricades to give defenders more time to get on their positions and hold the lower ring for longer.
+increased the time to collect items from the supporter shop for greenleaf players from 3 to 7 days.
+increased the vod duration from 20 to 25 minutes.
+increasing
+influence points
+insight we
+interesting
+introducing
+isle type: economic - more economic points to place crafting stations etc.
+isle type: stronghold - more fortification points to build walls etc.
+ismir frontier
+items crafted by hand will always have +0 quality.
+jesper hello community
+karleonan craftsman
+karleonian
+karleonian chainmail leg armor
+karleonian craftsman
+karleonian craftsman technology makes repairing items at npc vendors much more effective.
+landsknecht
+leatherworking
+legacy server merges based
+level 0 – destroyed house. does not spawn guards and will transform into ruins.
+level 1 – simple hut. spawns one guard.
+level 1 gives 1 token
+level 2 – house. spawns more guards than a simple hut.
+level 2 gives 2 tokens
+level 3 gives 3 tokens
+level 4 gives 5 tokens
+level 5 gives 8 tokens
+lone starr
+loot enabled or non-loot
+loot zone
+lordly haven halberd
+lordly haven halberd fixes
+lore collections
+lore fragments
+market district
+market keeper
+master reinforcement
+master reinforcement costs 50 silver (previously 1 gold)
+master renovation
+master renovation kit
+master renovation kit requires 60 meteoric iron (previously 100 meteoric iron)
+master renovation kit restores 35% of base durability (previously 20%)
+materials warehouse
+meteoric iron
+meteoric iron reinforcement
+meteoric iron reinforcement no longer restores item durability.
+meteoric iron reinforcement prevents an item from losing a quality level on a failed reinforcement.
+meteoric iron reinforcement requires 50 meteoric iron (previously 100 meteoric iron)
+meteoric reinforcement
+meteoric renovation kit
+minor tweaks and optimizations to the market.
+mount rejuvenation elixir
+mount rejuvenation potion
+mount skin
+nation points
+national castles
+new beginning
+new beginning server merges with
+new boss
+new grass particles. from now on you will notice that the grass stalk is flying occasionally over the grass models.
+new guild
+new guild event
+new lore collections with
+new reinforcement system the
+new skin
+old beasts
+optimization gloria victis
+optimizations in the shop filters.
+original faith
+overall seeds
+party loot distribution
+pilgrims rock
+players cannot fight while carrying the banner.
+potential fix to another edge case of npcs blocking with a bow.
+presenting
+previously
+progress insight
+progress new
+questionnaire
+reduced amount of gold and exp earned at crafting quest boards on the capital islands.
+regular siege times choose
+reinforcement
+reinforcements
+removed the flags in attacking factions’ camps as they used to generate too many points for the defenders.
+renamed guardhouse
+renamed guardhouse to barracks and new houses to guard's houses to give more clearer information about the function of buildings.
+renovation
+renovation kit
+renovation kit in
+renovation kits
+replaced the barricades on walls with new dedicated ones that allow defenders fighting back the attackers from elevated positions
+resources from destroyed wagons are not disappearing instantly and they are still pickable for a few minutes.
+restored the “featured” button in the supporter shop.
+reworked mount ageing system we
+rodrock fort
+rodrock fort share
+sangmarian official
+sea wraiths
+seeds today
+shop preview
+siege engineer
+siege events
+siege mechanics with
+siege quartermaster
+siege survival
+siege token
+siege token new
+siege valley
+skryta modliszka
+spawn the banner by using the item in inventory. it will appear in the player’s hands.
+strategies
+successful reinforcement does not repair the item’s durability.
+supporter shop
+supporter shops
+synchronization improvements
+taxes part
+tech laboratories
+technology
+temple district
+the armoured landsknecht set
+the armoured landsknecht weapon set
+the armoured landsknecht weapon set includes skin for the lordly haven halberd
+the banished crusade
+the banished crusade nitrite
+the banner spawn lasts for 20 minutes from the time it is deployed regardless of who holds it.
+the caravan brigand
+the griffin
+the griffins
+the number of herbs in the loot zone has been increased.
+the order
+the pack of arrows is restoring 20% of the player's max arrow capacity.
+the renovation kit
+the size of guild battles from several preset choices. example: 20 defenders vs 24 attackers.
+the time of their guild battle.
+the werewolf
+the werewolf boss today
+the werewolf elixir the
+throwing stones
+throwing stones today
+transport carts are capable of transporting 5 building mortar, 7 building stones and 9 building wood at the same time.
+transport wagons
+transport wagons that can be used to transport resources have been added.
+transport wagons we
+tweaked materials needed to upgrade guard's houses.
+tweaks and improvements to the werewolf boss. from now on the fight should be more challenging and based more on proper communication and cooperation.
+tweaks to the amount of audio and sounds being played at the same time. we made it to decrease the feeling of a “sound void” during huge battles.
+tweaks to the way the werewolf boss switches its aggro, and slightly decreased the werewolf’s health regeneration.
+unused banners can be traded between players' inventories or sold on the market and sales booths.
+update stockpiles
+vegetation
+visibility
+wagon will despawn automatically after 5 minutes of lack of inactivity
+walk and run with the banner. you can't sprint with it.
+war logistician
+we fixed an issue that occurred only during very long game sessions. players were experiencing worse performance during opening the interface window.
+we found out that midland was missing a quest board for beginners dedicated to tailoring and leatherworking. with today's patch, we are introducing it.
+we have fixed all reported and reproduced edge cases of invisible kicks. if anyone knows of any additional reproduction please remember to send them to us.
+we have improved the guild announcement in the edit mode.
+we made some gpu-side optimizations. this should result in potentially smoother fps.
+we noticed that the guild banner was not decaying correctly so we fixed that.
+werewolf altar
+werewolf altars
+werewolf dialogue quest change. the option where the npc may cure your lycanthropy after completing the stage of digging up the chest is now more visible.
+werewolf hunters contest the werewolf
+werewolf slayer
+werewolf we
+while carrying the pack with the arrows, you can replenish your quiver by clicking the left mouse button.
+with each level in the karleonian craftsman technology, all npc vendors will restore more item durability.
+wolfield and wolfield 2 will be merged into wolfield
+wood and mining resources will respawn faster.
+wooden billets can be used to craft hersir’s, veles’ and soldier’s weapons. previously, it required using coal.
+work in progress
+work in progress insight gloria
+workshops guild
+you can place on the ground the carrying pack of the arrows by pressing your kick button.

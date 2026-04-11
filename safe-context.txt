@@ -5,6 +5,7 @@
 #   https://gloriavictis.fandom.com/wiki/Category:Browse (top-level pages + subcats via api.php categorymembers)
 #   https://gloriavictis.fandom.com/wiki/Special:Categories (allcategories API — game cats only)
 # Add more lines anytime; avoid very generic English that matches real-world politics chat alone.
+# Bulk patch-note terms: gv-legacy-index.txt (merged in code; regenerate: node scripts/extract-gv-legacy-index.mjs <export.txt>)
 # Community pings (religion/politics skip only — Balkans/geopolitical/slurs still run first in code):
 ser savage
 sir savage

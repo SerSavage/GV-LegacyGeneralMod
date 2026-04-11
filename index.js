@@ -499,7 +499,8 @@ const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 
 // Safe-context terms: if message contains any of these (game/community/lore), we do NOT trigger religion/politics filter.
 // Built from in-code list + Gloria Victis Wiki (https://gloriavictis.fandom.com/wiki/Gloria_Victis_Wiki) + official wiki
-// (https://wiki.gloriavictisgame.com/index.php/Main_Page) + optional safe-context.txt
+// (https://wiki.gloriavictisgame.com/index.php/Main_Page) + safe-context.txt + gv-legacy-index.txt (patch-note export; regenerate with scripts/extract-gv-legacy-index.mjs)
+const GV_LEGACY_INDEX_FILE = process.env.GV_LEGACY_INDEX_FILE || path.join(process.cwd(), 'gv-legacy-index.txt');
 const SAFE_CONTEXT_BASE = [
   'nations', 'guilds', 'greenleafs', 'greenleaves', 'enemy', 'helping', 'players', 'emotes', 'monke',
   'downvote', 'upvote', 'voted', 'voting', 'sub',
@@ -544,11 +545,14 @@ const SAFE_CONTEXT_BASE = [
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
     .filter(w => !w.startsWith('#'));
-  const all = [...new Set([...SAFE_CONTEXT_BASE.map(w => w.toLowerCase()), ...fromFile])];
+  const fromLegacy = fs.existsSync(GV_LEGACY_INDEX_FILE)
+    ? loadWordsFromFile(GV_LEGACY_INDEX_FILE).filter((w) => !w.startsWith('#'))
+    : [];
+  const all = [...new Set([...SAFE_CONTEXT_BASE.map(w => w.toLowerCase()), ...fromFile, ...fromLegacy])];
   return new Set(all);
 }
 const SAFE_CONTEXT_WORDS = loadSafeContextWords();
-console.log(`Safe-context terms: ${SAFE_CONTEXT_WORDS.size} (GV Wiki + safe-context.txt)`);
+console.log(`Safe-context terms: ${SAFE_CONTEXT_WORDS.size} (GV Wiki + safe-context.txt + gv-legacy-index)`);
 
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass).
 // Includes common evasive spellings users type to avoid filters.
