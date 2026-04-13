@@ -43,10 +43,10 @@ const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
     .map((s) => s.trim())
     .filter(Boolean),
 );
-// This user also triggers N00bmars reply when they type "Poor you" (same flow as Savage / target mention).
+// This user also triggers Sangnoobs reply when they type "Poor you" (same flow as Savage / target mention).
 const NOOBMARS_POOR_YOU_AUTHOR_ID = String(process.env.NOOBMARS_POOR_YOU_AUTHOR_ID || '506091599420194817');
 const NOOBMARS_TRIGGER_TARGET_ID = String(process.env.NOOBMARS_TRIGGER_TARGET_ID || '275603696036085760');
-const NOOBMARS_MENTION_REPLY = process.env.NOOBMARS_MENTION_REPLY || 'N00bmars';
+const NOOBMARS_MENTION_REPLY = process.env.NOOBMARS_MENTION_REPLY || 'Sangnoobs';
 const DELUSION_STRICT_USER_ID = String(process.env.DELUSION_STRICT_USER_ID || '188328879180480512');
 function hasSavageNameTrigger(text) {
   if (!text || typeof text !== 'string') return false;
