@@ -530,7 +530,7 @@ const SAFE_CONTEXT_BASE = [
   'state of war', 'gloria victis', 'black eye games',
   // Game title context ("God of War") should not trigger religion/politics moderation.
   'god of war',
-  'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismirs', 'sangmar', 'sangarians',
+  'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismirs', 'sangmar', 'sangmir', 'sangarians',
   'empire of azebia', 'azebian', 'midlandic', 'sangmar empire',
   'forefather', 'greatfather', 'khagan', 'zenith',
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
@@ -1165,6 +1165,38 @@ function hasLanguageLearningContext(text) {
   return false;
 }
 
+/**
+ * "Danger" / "dangerous" in Gloria Victis or clear fantasy framing (enemy nations, evil forces, faction names).
+ * Lets gv-general allow e.g. "danger to evil people", "danger to Sangmar" / sangmir typo, without treating "danger" as real-world politics.
+ */
+function hasGameDangerLoreContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = stripDiacritics(text.toLowerCase());
+  if (!/\bdanger(ous)?\b/.test(lower)) return false;
+  if (
+    /\b(sangmar|sangmir|midland|midlanders|azebia|azebs|nordheim|ismirs|sangarians|gloria victis|\bgv\b|in[- ]game|ingame|mmorpg|nation|nations|guild|guilds|siege|faction|lore|npc|boss|realm|enemy|empire|emperor|khagan|forefather|greatfather|zenith|sangmar empire)\b/i.test(lower)
+  ) {
+    return true;
+  }
+  if (/\bdanger\s+to\s+evil\b/i.test(lower)) return true;
+  if (/\bevil\s+(people|king|queen|empire|nation|forces|lords?|villains?|npcs?)\b/i.test(lower)) return true;
+  if (/\bdanger\s+to\s+(the\s+)?(?:enemy|faction|realm|nation)\b/i.test(lower)) return true;
+  return false;
+}
+
+/** Directed "you're a danger" / "danger to players" (real users or IRL) — not bypassed by game-danger lore. */
+function hasDangerFramingTargetPlayersOrHumans(text) {
+  if (!text || typeof text !== 'string') return false;
+  if (hasGameDangerLoreContext(text)) return false;
+  const lower = stripDiacritics(text.toLowerCase());
+  if (!/\bdanger(ous)?\b/.test(lower)) return false;
+  if (/\b(you'?re|you\s+are|u\s+r|ur)\s+a\s+danger\b/i.test(lower)) return true;
+  if (/\bdanger\s+to\s+(?:all\s+|the\s+)?people\b/i.test(lower)) return true;
+  if (/\bdanger\s+to\s+(you|u|players?|everyone|someone|anyone|humans?|irl|the\s+community|this\s+community|other\s+players?)\b/i.test(lower)) return true;
+  if (/\b(players?|people|everyone)\s+are\s+a\s+danger\b/i.test(lower)) return true;
+  return false;
+}
+
 // If message contains any safe-context word (game/community talk), don't trigger
 function hasSafeContext(text) {
   if (!text || typeof text !== 'string') return false;
@@ -1173,6 +1205,7 @@ function hasSafeContext(text) {
   for (const word of SAFE_CONTEXT_WORDS) {
     if (lower.includes(word)) return true;
   }
+  if (hasGameDangerLoreContext(text)) return true;
   return false;
 }
 
@@ -1278,8 +1311,9 @@ const REGION_OR_SERVER_ZONE_WORDS = new Set([
 ].map(w => w.toLowerCase()));
 // Never count these as religion/politics trigger words (common words / game terms that match leaders or lists by substring)
 // nation / nations — GV faction chat ("nation chat", "which nation"); words.txt lists bare "nation" as political otherwise.
+// danger / dangerous — common in GV (NPCs, nations, combat); not political by themselves (see hasGameDangerLoreContext).
 const TRIGGER_WORD_IGNORE = new Set([
-  ...['good', 'goods', 'mod', 'mods', 'nation', 'nations'].map((w) => w.toLowerCase()),
+  ...['good', 'goods', 'mod', 'mods', 'nation', 'nations', 'danger', 'dangerous'].map((w) => w.toLowerCase()),
   ...REGION_OR_SERVER_ZONE_WORDS,
 ]);
 function wordMatchesTriggerWord(word) {
@@ -1517,11 +1551,11 @@ function messageHasBlockedMediaId(message) {
 
 // gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect;
 // DM (French) when ≥10 strikes in 5 min OR ≥50 strikes in 1 h; if DM fails, ping in #miaow (French).
-// Also: >50 posts in 10 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush).
+// Also: ≥10 posts in 10 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush).
 const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
 const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
 const SPAM_WATCH_GV_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_GV_VOLUME_WINDOW_MS || String(10 * 60 * 1000), 10));
-const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '50', 10));
+const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '10', 10));
 const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
 const SPAM_WATCH_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_VOLUME_WINDOW_MS || String(60 * 60 * 1000), 10)); // default 1h
 const SPAM_WATCH_CONTENT_COUNT_MAX_KEYS = 120;
@@ -1605,10 +1639,13 @@ async function sendSpamWatchMiaowDmFallback(client) {
   }
 }
 
-/** Download attachments, post to #miaow, then delete from gv-general (Discord CDN URLs expire after delete). */
-async function deleteAndRepostSpamWatchToMiaow(message) {
+/** Download attachments, post to #miaow, then delete from gv-general (Discord CDN URLs expire after delete). @returns {Promise<boolean>} true if deleted from gv-general */
+async function deleteAndRepostSpamWatchToMiaow(message, headerSuffix) {
   const dest = await message.client.channels.fetch(SPAM_WATCH_MIAOW_CHANNEL_ID).catch(() => null);
-  if (!dest?.isTextBased()) return;
+  if (!dest?.isTextBased()) return false;
+  const label =
+    headerSuffix
+    ?? `${SPAM_WATCH_GV_VOLUME_THRESHOLD}+ posts / ${Math.round(SPAM_WATCH_GV_VOLUME_WINDOW_MS / 60000)} min`;
   const raw = message.content ? String(message.content).trim() : '';
   const text = raw ? raw.slice(0, 1900) + (raw.length > 1900 ? '…' : '') : '(no text)';
   const files = [];
@@ -1629,7 +1666,7 @@ async function deleteAndRepostSpamWatchToMiaow(message) {
       idx++;
     }
   }
-  const content = [`${message.author} — moved from <#${TRIGGER_CHANNEL_ID}> (${SPAM_WATCH_GV_VOLUME_THRESHOLD}+ posts / ${Math.round(SPAM_WATCH_GV_VOLUME_WINDOW_MS / 60000)} min):`, text].join('\n\n');
+  const content = [`${message.author} — moved from <#${TRIGGER_CHANNEL_ID}> (${label}):`, text].join('\n\n');
   try {
     await dest.send({
       content,
@@ -1638,13 +1675,15 @@ async function deleteAndRepostSpamWatchToMiaow(message) {
     });
   } catch (e) {
     console.error('[spam-watch-volume] send failed:', e.message);
-    return;
+    return false;
   }
   try {
     await message.delete();
   } catch (e) {
     console.error('[spam-watch-volume] delete failed:', e.message);
+    return false;
   }
+  return true;
 }
 
 /**
@@ -1668,7 +1707,7 @@ async function handleSpamWatchVolumeFlush(message) {
   const channel = message.channel;
   for (const { id } of batch) {
     const m = id === message.id ? message : await channel.messages.fetch(id).catch(() => null);
-    if (m) await deleteAndRepostSpamWatchToMiaow(m);
+    if (m) await deleteAndRepostSpamWatchToMiaow(m, undefined);
   }
   if (DEBUG) {
     console.log(`[spam-watch-volume] Flushed ${batch.length} message(s) to <#${SPAM_WATCH_MIAOW_CHANNEL_ID}>`);
@@ -1679,8 +1718,8 @@ async function handleSpamWatchVolumeFlush(message) {
 /** @returns {Promise<boolean>} true if handled (caller should return) */
 async function handleSpamWatchUser(message) {
   if (String(message.author.id) !== SPAM_WATCH_USER_ID) return false;
-  const norm = normalizeSpamContent(message.content);
-  if (!norm) return false;
+  // Empty body / stickers / attachment-only still count (shared key) so spam isn’t skipped.
+  const norm = normalizeSpamContent(message.content) || '(no text)';
 
   const now = Date.now();
   const state = loadSpamWatchState();
@@ -1719,16 +1758,19 @@ async function handleSpamWatchUser(message) {
   if (volumeSpam) why.push(`>10 messages en ${Math.round(SPAM_WATCH_VOLUME_WINDOW_MS / 60000)} min`);
   if (wallSpam) why.push('copier-coller répété');
 
-  try {
-    await message.reply({
-      content: [
-        `${message.author} — Merci de ne pas spammer <#${TRIGGER_CHANNEL_ID}>.`,
-        `Va plutôt sur <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> (ou <#${REDIRECT_CHANNEL_ID}>).`,
-        `(${why.join(' · ')})`,
-      ].join('\n'),
-    });
-  } catch (e) {
-    console.error('spam-watch reply failed:', e.message);
+  const moved = await deleteAndRepostSpamWatchToMiaow(message, why.join(' · '));
+  if (!moved) {
+    try {
+      await message.reply({
+        content: [
+          `${message.author} — Merci de ne pas spammer <#${TRIGGER_CHANNEL_ID}>.`,
+          `Va plutôt sur <#${SPAM_WATCH_MIAOW_CHANNEL_ID}> (ou <#${REDIRECT_CHANNEL_ID}>).`,
+          `(${why.join(' · ')})`,
+        ].join('\n'),
+      });
+    } catch (e) {
+      console.error('spam-watch reply failed:', e.message);
+    }
   }
 
   if (shouldTryDm) {
@@ -2272,12 +2314,13 @@ client.on('messageCreate', async (message) => {
 
   if (await handleSpamWatchVolumeFlush(message)) return;
 
+  // Before empty-content skip: watched user attachment/sticker spam must still hit handleSpamWatchUser.
+  if (await handleSpamWatchUser(message)) return;
+
   if (!message.content) {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
     return;
   }
-
-  if (await handleSpamWatchUser(message)) return;
 
   // Harassment/race-bait evasion (e.g. "de lusional ... black plague player ... big fella") → hold channel.
   if (hasHarassmentRaceBaitEvasion(message.content, message.author.id)) {
@@ -2379,6 +2422,12 @@ client.on('messageCreate', async (message) => {
 
   // Psychiatric / disability slurs (e.g. "schizo", "they're autistic") — hold channel, no safe-context bypass
   if (hasMedicalPsychiatricInsult(message.content)) {
+    await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
+    return;
+  }
+
+  // "You're a danger" / "danger to players" (IRL or targeting users) — before safe-context so bare "players" doesn't bypass.
+  if (hasDangerFramingTargetPlayersOrHumans(message.content)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
