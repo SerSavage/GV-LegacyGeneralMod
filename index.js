@@ -2383,7 +2383,14 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Geopolitical keywords (states, NATO, UN, sanctions, invasion, regime, …) — hold channel even if message also has guild/nation safe-context
+  // Safe-context short-circuit for normal GV chat before geopolitical/off-topic/religion paths.
+  // Hard filters above (slurs / stereotype / medical) remain non-bypassable.
+  if (hasSafeContext(message.content)) {
+    if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
+    return; // game/community context – don't trigger
+  }
+
+  // Geopolitical keywords (states, NATO, UN, sanctions, invasion, regime, …)
   if (hasGeopoliticalHardRedirect(message.content)) {
     const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardMovedHold(message, randomGif);
@@ -2395,12 +2402,6 @@ client.on('messageCreate', async (message) => {
     const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardMovedHold(message, randomGif);
     return;
-  }
-
-  // Safe-context BEFORE off-topic/religion so game lines (e.g. "choosing a nation", "more military") are not mis-flagged
-  if (hasSafeContext(message.content)) {
-    if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
-    return; // game/community context – don't trigger
   }
 
   // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, repost to hold channel.
