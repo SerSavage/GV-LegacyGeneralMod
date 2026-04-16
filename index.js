@@ -35,7 +35,7 @@ const CSAM_ACK_EMOJI = '✅';
 const CSAM_ACK_COLLECTOR_MS = 7 * 24 * 60 * 60 * 1000; // wait up to 7 days for first ✅ from author
 // User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
-// If configured authors target Ser/SirSavage (mention or evasion spelling), bot pings them with NOOBMARS_MENTION_REPLY.
+// If configured authors target Ser/SirSavage (mention or evasion spelling), bot DMs them with NOOBMARS_MENTION_REPLY.
 // One author (NOOBMARS_POOR_YOU_AUTHOR_ID) also triggers on the phrase "Poor you".
 const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
   String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,405079515765800979,506091599420194817')
@@ -75,11 +75,35 @@ function shouldReplyNoobmars(message) {
   if (hasPoorYouNoobmarsTrigger(message)) return true;
   return hasSavageNameTrigger(message.content);
 }
-function getNoobmarsReplyPayload(authorId) {
-  return {
-    content: `<@${authorId}> ${NOOBMARS_MENTION_REPLY}`,
-    allowedMentions: { users: [authorId] },
-  };
+function getNoobmarsDmPayload() {
+  return { content: NOOBMARS_MENTION_REPLY };
+}
+async function relayNoobmarsToHoldOnDmFailure(message) {
+  const holdChannel = await message.client.channels.fetch(MOVED_BY_BOT_CHANNEL_ID).catch(() => null);
+  if (!holdChannel?.isTextBased()) return false;
+  const raw = message.content ? String(message.content).trim() : '';
+  const movedText = raw ? raw.slice(0, 1200) + (raw.length > 1200 ? '…' : '') : '(no text)';
+  const relay = [
+    `${message.author.toString()} — moved from <#${TRIGGER_CHANNEL_ID}> (Noobmars DM closed/blocked):`,
+    movedText,
+    `${message.author.toString()} ${NOOBMARS_MENTION_REPLY}`,
+  ].join('\n\n');
+  try {
+    await holdChannel.send({
+      content: relay,
+      allowedMentions: { users: [message.author.id] },
+    });
+  } catch (err) {
+    console.error('Noobmars hold relay failed:', err.message);
+    return false;
+  }
+  try {
+    await message.delete();
+  } catch (err) {
+    console.error('Noobmars fallback delete failed:', err.message);
+    return false;
+  }
+  return true;
 }
 
 function stripDiacritics(text) {
@@ -923,6 +947,11 @@ function looksLikeDelusionVariant(text, strict) {
   const cleaned = stripDiacritics(normalizeForMatch(text).toLowerCase());
   const tokens = cleaned.split(/[^a-z0-9]+/).filter(Boolean);
   const targets = ['delusion', 'delusional', 'delulu', 'dilusion', 'dilusional', 'deulusion'];
+  const compact = cleaned.replace(/[^a-z]/g, '');
+  // Compact regex catches spaced/separated/stretched variants:
+  // "d e l u l u", "deeeluluuu", "delulululu", "de_lu_lu", etc.
+  if (/(?:^|[^a-z])d[e]+l+u+l+u+(?:[^a-z]|$)/i.test(cleaned)) return true;
+  if (/d[e]+l+u+l+u+/.test(compact)) return true;
   for (const tok of tokens) {
     const t = tok.replace(/[^a-z]/g, '');
     if (!t) continue;
@@ -934,7 +963,11 @@ function looksLikeDelusionVariant(text, strict) {
       editDistance(t, 'delusional'),
       editDistance(t, 'delulu'),
     );
-    const hasCore = t.includes('delu') || t.includes('lusi') || (t.includes('del') && t.includes('usi'));
+    const hasCore =
+      t.includes('delu')
+      || t.includes('lusi')
+      || /d[e]+l+u+l+u+/.test(t)
+      || (t.includes('del') && t.includes('usi'));
     if (overlap >= 6 && (minDist <= 3 || hasCore)) return true;
     if (strict && overlap >= 5 && (minDist <= 4 || hasCore)) return true;
   }
@@ -953,11 +986,16 @@ function hasHarassmentRaceBaitEvasion(text, authorId) {
     compact.includes('delusional') ||
     compact.includes('delusion') ||
     compact.includes('delulu') ||
+    compact.includes('delul') ||
+    compact.includes('delulz') ||
+    compact.includes('delulut') ||
+    compact.includes('deluloo') ||
     compact.includes('dilulu') ||
     compact.includes('telulu') ||
     compact.includes('dilusion') ||
     compact.includes('deulusion') ||
     compact.includes('dilusional') ||
+    /d[e]+l+u+l+u+/.test(compact) ||
     lower.includes('sir delulu') ||
     lower.includes('miss delulu') ||
     lower.includes('mr delulu') ||
@@ -2235,9 +2273,12 @@ client.on('messageCreate', async (message) => {
 
   if (shouldReplyNoobmars(message)) {
     try {
-      await message.reply(getNoobmarsReplyPayload(message.author.id));
+      await message.author.send(getNoobmarsDmPayload());
     } catch (err) {
-      console.error('Noobmars mention reply failed:', err.message);
+      console.error('Noobmars DM failed (user may have DMs closed):', err.message);
+      if (channelId === TRIGGER_CHANNEL_ID) {
+        await relayNoobmarsToHoldOnDmFailure(message);
+      }
     }
     return;
   }
