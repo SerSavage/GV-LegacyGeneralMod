@@ -29,6 +29,8 @@ const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
 // Bot-moved gv-general posts land here so #off-topic chat flow stays clean; message body still tells users to use off-topic
 const MOVED_BY_BOT_CHANNEL_ID = String(process.env.MOVED_BY_BOT_CHANNEL_ID || '1485211311070511225');
+// When rule-hit Chronicus/off-topic education cannot be DM’d, post mention + text here (default same hold channel; override if needed).
+const CHRONICUS_EDUCATION_DM_FALLBACK_CHANNEL_ID = String(process.env.CHRONICUS_EDUCATION_DM_FALLBACK_CHANNEL_ID || '1485211311070511225');
 // Severe CSAM/grooming-related text in gv-general → same hold channel + TMFIAR + mandatory ✅ from author (same rules for all users).
 const CSAM_GROOMING_WORDS_FILE = process.env.CSAM_GROOMING_WORDS_FILE || path.join(process.cwd(), 'assets', 'csam-grooming-triggers.txt');
 const CSAM_ACK_EMOJI = '✅';
@@ -525,7 +527,7 @@ const TENOR_GIFS = [
 // GIF for off-topic phrases (body/gender/race vulgar) – Mace Windu "it's settled then"
 const OFF_TOPIC_GIF = 'https://tenor.com/view/mace-windu-gif-24903892';
 
-// Reference: which media goes with which trigger (all in gv-general → delete + repost to MOVED_BY_BOT_CHANNEL; Chronicus in gv-general → #off-topic unless noted)
+// Reference: which media goes with which trigger (gv-general → delete + repost to MOVED_BY_BOT_CHANNEL; Chronicus education → author DM, else CHRONICUS_EDUCATION_DM_FALLBACK_CHANNEL_ID)
 // • Slurs (first time)  → random TENOR_GIF  | Slurs (repeated in 1h) → VIDEO_URL (TMFIAR streamable.com/e/mwfkm2)
 // • Off-topic phrases   → OFF_TOPIC_GIF (Mace Windu only)
 // • Religion/politics  → random TENOR_GIF
@@ -1837,7 +1839,37 @@ async function handleSpamWatchUser(message) {
   return true;
 }
 
-// Delete message in gv-general, repost to MOVED_BY_BOT_CHANNEL (hold/archive), still tell user to continue in #off-topic; then Chronicus in gv-general links off-topic
+/** After a gv-general removal, send off-topic + Chronicus education to the author (DM). Keeps gv-general clean. */
+async function sendPostModerationChronicusEducation(message) {
+  const chronicusContent = `${message.author.toString()}\n\n<#${REDIRECT_CHANNEL_ID}>\n\n${getChronicusAnnouncementText()}`;
+  const memePath = getRandomChronicusMeme();
+  const payload = memePath
+    ? { content: chronicusContent, files: [{ attachment: memePath, name: path.basename(memePath) }] }
+    : { content: chronicusContent };
+  try {
+    await message.author.send(payload);
+    return;
+  } catch (err) {
+    console.error('Chronicus education DM failed (DM closed/blocked):', err.message);
+  }
+  try {
+    const hold = await message.client.channels.fetch(CHRONICUS_EDUCATION_DM_FALLBACK_CHANNEL_ID).catch(() => null);
+    if (hold?.isTextBased()) {
+      await hold.send({
+        ...payload,
+        content: [
+          `${message.author.toString()} — **DM failed** (closed or bot blocked); education posted in <#${CHRONICUS_EDUCATION_DM_FALLBACK_CHANNEL_ID}> instead of gv-general:`,
+          payload.content,
+        ].join('\n\n'),
+        allowedMentions: { users: [message.author.id] },
+      });
+    }
+  } catch (err2) {
+    console.error('Chronicus education fallback channel send failed:', err2.message);
+  }
+}
+
+// Delete message in gv-general, repost to MOVED_BY_BOT_CHANNEL (hold/archive), still tell user to continue in #off-topic; Chronicus + redirect go to author DM (not gv-general).
 // gifOrVideoPayload: string (GIF/video URL) OR { content?: string, files?: Array } so video can be sent as attachment for proper Discord embed
 async function deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload) {
   try {
@@ -1869,19 +1901,7 @@ async function deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload) {
   } catch (err) {
     console.error('Forward to moved-by-bot hold channel failed:', err);
   }
-  try {
-    const generalChannel = await message.client.channels.fetch(GV_GENERAL_CHANNEL_ID);
-    if (generalChannel?.isTextBased()) {
-      const chronicusContent = `${message.author.toString()}\n\n<#${REDIRECT_CHANNEL_ID}>\n\n${getChronicusAnnouncementText()}`;
-      const memePath = getRandomChronicusMeme();
-      const payload = memePath
-        ? { content: chronicusContent, files: [{ attachment: memePath, name: path.basename(memePath) }] }
-        : { content: chronicusContent };
-      await generalChannel.send(payload);
-    }
-  } catch (err) {
-    console.error('Chronicus Generalium post failed:', err.message);
-  }
+  await sendPostModerationChronicusEducation(message);
 }
 
 // Welcome ONCE ever per UserID (persisted) — no second welcome on rejoin, role change, or role remove/re-add
@@ -2048,7 +2068,7 @@ client.once('ready', () => {
   botReadyAt = Date.now();
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
-  console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus still points to <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
+  console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus education → author DM (hold fallback if DMs closed); <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
   console.log(`CSAM/grooming triggers: ${csamGroomingTriggers.length} lines → hold + TMFIAR + ${CSAM_ACK_EMOJI} ack (${CSAM_GROOMING_WORDS_FILE})`);
   console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
   console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
