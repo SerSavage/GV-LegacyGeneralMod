@@ -823,6 +823,40 @@ function normalizeRunesForContextScan(text) {
   return t;
 }
 
+/** Count Unicode runic letters (Elder/Younger Futhark etc. in U+16A0–U+16FF). */
+function countElderFutharkRunes(text) {
+  if (!text || typeof text !== 'string') return 0;
+  const m = text.match(/[\u16A0-\u16FF]/g);
+  return m ? m.length : 0;
+}
+
+/**
+ * Runic / Old Norse epigraphy context — inspired by runestone corpora (e.g. Swedish inscriptions) and CLTK’s rune docs,
+ * without bundling HF datasets or a Python stack. Lets gv-general tolerate rune-only or rune-heavy chat when it is not slurs.
+ */
+const RUNIC_EPIGRAPHY_PHRASE_RES = [
+  /\bold\s+norse\b/i,
+  /\bproto[- ]?norse\b/i,
+  /\belder\s+futhark\b/i,
+  /\byounger\s+futhark\b/i,
+  /\b(?:viking|norse)\s+runes?\b/i,
+  /\brune\s+stones?\b/i,
+  /\brunestones?\b/i,
+  /\b(?:futhark|futhork)\b/i,
+  /\b(?:epigraphy|transliterat(?:e|ion|ing))\b/i,
+  /\b(?:runic|runes)\b/i,
+];
+function hasRunicEpigraphySafeContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = stripDiacritics(text.toLowerCase());
+  if (RUNIC_EPIGRAPHY_PHRASE_RES.some((re) => re.test(lower))) return true;
+  const runeCount = countElderFutharkRunes(text);
+  if (runeCount < 3) return false;
+  const norm = normalizeRunesForContextScan(text);
+  if (hasSpamSlur(text) || hasSpamSlur(norm)) return false;
+  return true;
+}
+
 // Check if message text contains any trigger word as a whole word (case-insensitive).
 // Also checks normalized form so "goooood", "g0d", "pol1t1cs" match "god", "politics".
 function hasTriggerWord(text) {
@@ -1077,6 +1111,7 @@ function hasGeopoliticalHardRedirect(text) {
 function hasBalkansRealWorldOffTopicRedirect(text) {
   if (!text || typeof text !== 'string') return false;
   if (hasLanguageLearningContext(text)) return false;
+  if (hasRunicEpigraphySafeContext(text)) return false;
   const lower = stripDiacritics(text.toLowerCase());
   const balkanSingles = ['bosnia', 'bosnian', 'bosniak', 'mostar', 'sarajevo', 'srebrenica', 'yugoslav', 'archduke'];
   if (balkanSingles.some((w) => matchesPhraseOrWordBoundaries(lower, w))) return true;
@@ -1177,6 +1212,7 @@ const LANGUAGE_LEXICON_EXTRA = [
   'norwegian', 'danish', 'finnish', 'swedish', 'dutch', 'polish', 'czech', 'slovak', 'hungarian', 'romanian', 'bulgarian',
   'serbian', 'croatian', 'bosnian', 'slovenian', 'albanian', 'macedonian', 'lithuanian', 'latvian', 'estonian', 'icelandic',
   'welsh', 'scottish', 'gaelic', 'catalan', 'basque', 'galician', 'maltese', 'hebrew', 'farsi', 'mandarin', 'cantonese',
+  'old norse',
   'hokkien', 'shanghainese', 'vietnamese', 'thai', 'khmer', 'lao', 'burmese', 'tagalog', 'malay', 'indonesian', 'swahili',
   'zulu', 'afrikaans', 'punjabi', 'bengali', 'tamil', 'telugu', 'marathi', 'gujarati', 'nepali', 'sinhala', 'sinhalese',
   'kurdish', 'pashto', 'mongolian', 'quechua', 'esperanto', 'ukrainian', 'belarusian', 'georgian', 'armenian', 'azerbaijani',
@@ -1275,6 +1311,7 @@ function hasDangerFramingTargetPlayersOrHumans(text) {
 // If message contains any safe-context word (game/community talk), don't trigger
 function hasSafeContext(text) {
   if (!text || typeof text !== 'string') return false;
+  if (hasRunicEpigraphySafeContext(text)) return true;
   const normalizedRunes = normalizeRunesForContextScan(text);
   if (hasLanguageLearningContext(text) || hasLanguageLearningContext(normalizedRunes)) return true;
   const lower = stripDiacritics(normalizedRunes.toLowerCase());
