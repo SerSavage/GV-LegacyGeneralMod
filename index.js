@@ -24,9 +24,15 @@ const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGE
 // Admin-only channel: we skip gv-general triggers for messages here; welcomes are only from guildMemberAdd (not from Carl-bot log)
 const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
-// gv-general: after a runic-only bypass message, post a short transliteration (Latin letters, not English translation)
+// gv-general: after a runic-only bypass message, post English guess + Latin transliteration (see RUNE_LATIN_* env)
 const RUNE_LATIN_FOLLOWUP_ENABLED = process.env.RUNE_LATIN_FOLLOWUP_ENABLED !== '0' && process.env.RUNE_LATIN_FOLLOWUP_ENABLED !== 'false';
 const RUNE_LATIN_FOLLOWUP_DELAY_MS = Math.max(0, parseInt(process.env.RUNE_LATIN_FOLLOWUP_DELAY_MS, 10) || 800);
+// When true (default): only post transliteration for plain public questions (has "?", no reply, no user/role/@everyone/@here).
+const RUNE_LATIN_FOLLOWUP_QUESTIONS_ONLY = process.env.RUNE_LATIN_FOLLOWUP_QUESTIONS_ONLY !== '0' && process.env.RUNE_LATIN_FOLLOWUP_QUESTIONS_ONLY !== 'false';
+// Primary line is English (heuristics + optional Google). Set to 0 for Latin-only follow-up.
+const RUNE_LATIN_ENGLISH_LINE = process.env.RUNE_LATIN_ENGLISH_LINE !== '0' && process.env.RUNE_LATIN_ENGLISH_LINE !== 'false';
+// After heuristics, call Google translate (auto→en) so non-English runic text can become English. Sends text to Google; set 0 to disable.
+const RUNE_LATIN_GOOGLE_TRANSLATE = process.env.RUNE_LATIN_GOOGLE_TRANSLATE !== '0' && process.env.RUNE_LATIN_GOOGLE_TRANSLATE !== 'false';
 // Message to send when a word is detected
 // #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
@@ -899,11 +905,89 @@ function hasSpamSlur(text) {
 }
 
 /**
+ * Common English words mistyped when using ᚠ (f) for /v/ or similar; longest keys first.
+ * Extend as needed — this is a guess layer on top of Unicode transliteration, not a full translator.
+ */
+const RUNIC_LATIN_ENGLISH_GUESSES = [
+  ['efening', 'evening'],
+  ['evning', 'evening'],
+  ['happi', 'happy'],
+  ['mornin', 'morning'],
+  ['plese', 'please'],
+  ['peple', 'people'],
+  ['thans', 'thanks'],
+  ['toomorrow', 'tomorrow'],
+  ['tommorow', 'tomorrow'],
+  ['whan', 'when'],
+];
+const RUNIC_LATIN_ENGLISH_GUESSES_SORTED = Object.freeze(
+  [...RUNIC_LATIN_ENGLISH_GUESSES].sort((a, b) => b[0].length - a[0].length),
+);
+
+function applyRunicLatinEnglishGuesses(latin) {
+  if (!latin || typeof latin !== 'string') return '';
+  let t = latin;
+  for (const [from, to] of RUNIC_LATIN_ENGLISH_GUESSES_SORTED) {
+    const re = new RegExp('\\b' + escapeRegex(from) + '\\b', 'gi');
+    t = t.replace(re, (m) => {
+      if (m.length > 1 && m === m.toUpperCase()) return to.toUpperCase();
+      if (m[0] >= 'A' && m[0] <= 'Z') return to.charAt(0).toUpperCase() + to.slice(1);
+      return to;
+    });
+  }
+  return t;
+}
+
+function parseGoogleTranslateSentence(data) {
+  const block = data?.[0];
+  if (!Array.isArray(block)) return '';
+  return block.map((seg) => (Array.isArray(seg) ? seg[0] : '')).join('');
+}
+
+async function translateGoogleAutoToEn(text) {
+  if (!RUNE_LATIN_GOOGLE_TRANSLATE || !text || typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.length > 4500) return null;
+  try {
+    const url = new URL('https://translate.googleapis.com/translate_a/single');
+    url.searchParams.set('client', 'gtx');
+    url.searchParams.set('sl', 'auto');
+    url.searchParams.set('tl', 'en');
+    url.searchParams.set('dt', 't');
+    url.searchParams.set('q', trimmed);
+    const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const out = parseGoogleTranslateSentence(data).trim();
+    return out || null;
+  } catch (e) {
+    if (DEBUG) console.error('[runic-latin] Google translate failed:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Plain question to the channel: must look like a public question (ASCII ?), not a reply, no pings.
+ */
+function shouldPostRunicLatinFollowUp(message, gvModerationText) {
+  if (!RUNE_LATIN_FOLLOWUP_QUESTIONS_ONLY) return true;
+  if (message.reference) return false;
+  if (message.mentions?.users?.size > 0) return false;
+  if (message.mentions?.roles?.size > 0) return false;
+  if (message.mentions?.everyone) return false;
+  if (!/\?/.test(String(gvModerationText || ''))) return false;
+  return true;
+}
+
+/**
  * Post a normal channel message (not a reply) with Latin transliteration after gv-general runic bypass.
  * Re-fetches the message after a delay so we skip if it was deleted (e.g. by moderation elsewhere).
  */
 function scheduleRunicLatinFollowUp(message) {
   if (!RUNE_LATIN_FOLLOWUP_ENABLED) return;
+  const gvPre = message.content ? String(message.content) : '';
+  const gvModerationTextEarly = stripOuterQuotesForGeneral(gvPre.trim()) || gvPre;
+  if (!shouldPostRunicLatinFollowUp(message, gvModerationTextEarly)) return;
   const channel = message.channel;
   const messageId = message.id;
   const delay = RUNE_LATIN_FOLLOWUP_DELAY_MS;
@@ -915,17 +999,36 @@ function scheduleRunicLatinFollowUp(message) {
         if (!fresh) return;
         const raw = fresh.content ? String(fresh.content) : '';
         const gvModerationText = stripOuterQuotesForGeneral(raw.trim()) || raw;
+        if (!shouldPostRunicLatinFollowUp(fresh, gvModerationText)) return;
         if (countElderFutharkRunes(gvModerationText) < 3) return;
         const norm = normalizeRunesForContextScan(gvModerationText);
         if (hasSpamSlur(gvModerationText) || hasSpamSlur(norm)) return;
         const latin = transliterateRunesToLatin(gvModerationText);
         if (!latin) return;
-        const header = '**Runic → Latin (approx.)**\n';
-        const maxBody = 2000 - header.length;
-        let body = latin;
-        if (body.length > maxBody) body = body.slice(0, maxBody - 1) + '…';
+        let englishLine = latin;
+        if (RUNE_LATIN_ENGLISH_LINE) {
+          englishLine = applyRunicLatinEnglishGuesses(latin);
+          if (RUNE_LATIN_GOOGLE_TRANSLATE) {
+            const viaGoogle = await translateGoogleAutoToEn(englishLine);
+            if (viaGoogle && viaGoogle.length > 0) englishLine = viaGoogle;
+          }
+        }
+        let content;
+        if (RUNE_LATIN_ENGLISH_LINE) {
+          const same =
+            englishLine.replace(/\s+/g, ' ').trim().toLowerCase() ===
+            latin.replace(/\s+/g, ' ').trim().toLowerCase();
+          if (same) {
+            content = `**Runic → English (approx.)**\n${englishLine}`;
+          } else {
+            content = `**Runic → English (approx.)**\n${englishLine}\n\n*Latin transliteration:*\n${latin}`;
+          }
+        } else {
+          content = `**Runic → Latin (approx.)**\n${latin}`;
+        }
+        if (content.length > 2000) content = content.slice(0, 1997) + '…';
         await channel.send({
-          content: header + body,
+          content,
           allowedMentions: { parse: [] },
         });
       } catch (err) {
