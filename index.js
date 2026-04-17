@@ -111,6 +111,26 @@ async function relayNoobmarsToHoldOnDmFailure(message) {
 function stripDiacritics(text) {
   return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
+
+/** Strip one pair of wrapping quotation marks (ASCII or typographic) so moderation sees the same text as without quotes. */
+function stripOuterQuotesForGeneral(text) {
+  if (text == null || typeof text !== 'string') return text;
+  const t = text.trim();
+  if (t.length < 2) return text;
+  const pairs = [
+    ['"', '"'],
+    ['\u201c', '\u201d'],
+    ['\u201e', '\u201c'],
+    ['\u00ab', '\u00bb'],
+  ];
+  for (const [open, close] of pairs) {
+    if (t.startsWith(open) && t.endsWith(close)) {
+      const inner = t.slice(open.length, t.length - close.length).trim();
+      return inner.length > 0 ? inner : text;
+    }
+  }
+  return text;
+}
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp)$/i;
 const IMAGE_CONTENT_TYPES = /^image\//;
 const VIDEO_CONTENT_TYPES = /^video\//;
@@ -1572,7 +1592,9 @@ function hasCsamGroomingTrigger(text) {
 }
 
 function getMessageTextForCsamScan(message) {
-  let t = message.content ? String(message.content) : '';
+  const raw = message.content ? String(message.content) : '';
+  const stripped = stripOuterQuotesForGeneral(raw.trim()) || raw;
+  let t = stripped;
   if (message.attachments?.size) {
     for (const a of message.attachments.values()) {
       if (a.name) t += ` ${a.name}`;
@@ -2445,6 +2467,9 @@ client.on('messageCreate', async (message) => {
     return; // only gv-general
   }
 
+  const rawGvContent = message.content ? String(message.content) : '';
+  const gvModerationText = stripOuterQuotesForGeneral(rawGvContent.trim()) || rawGvContent;
+
   const csamScanText = getMessageTextForCsamScan(message);
   if (csamScanText && hasCsamGroomingTrigger(csamScanText)) {
     if (DEBUG) console.log(`[csam-hold] Trigger for ${message.author.tag}`);
@@ -2470,19 +2495,19 @@ client.on('messageCreate', async (message) => {
 
   // Elder Futhark / runic text: skip remaining gv-general moderation (harassment, slur GIF, geopolitics, religion filter, …).
   // CSAM/blocked-media/spam-watch already ran above. Slurs still block via hasSpamSlur on raw + transliterated text.
-  if (isRunicInscriptionAllowed(message.content)) {
-    if (DEBUG) console.log('[skip] runic inscription (Unicode runes + slur scan):', message.content.slice(0, 80));
+  if (isRunicInscriptionAllowed(gvModerationText)) {
+    if (DEBUG) console.log('[skip] runic inscription (Unicode runes + slur scan):', gvModerationText.slice(0, 80));
     return;
   }
 
   // Harassment/race-bait evasion (e.g. "de lusional ... black plague player ... big fella") → hold channel.
-  if (hasHarassmentRaceBaitEvasion(message.content, message.author.id)) {
+  if (hasHarassmentRaceBaitEvasion(gvModerationText, message.author.id)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
   // Monkey-emoji / moderation trope OR in-game “monkey noises” comms culture: react only, do not return
-  if (hasMonkeyModerationTrope(message.content) || hasMonkeyNoisesCultureTrope(message.content)) {
+  if (hasMonkeyModerationTrope(gvModerationText) || hasMonkeyNoisesCultureTrope(gvModerationText)) {
     try {
       const tropeEmoji = MONKEY_TROPE_EMOJIS[Math.floor(Math.random() * MONKEY_TROPE_EMOJIS.length)];
       await message.react(tropeEmoji);
@@ -2493,7 +2518,7 @@ client.on('messageCreate', async (message) => {
   }
 
   // "Poor … Savage" — reply with raid meme video (gv-general only)
-  if (hasPoorSomethingSavageTrigger(message.content)) {
+  if (hasPoorSomethingSavageTrigger(gvModerationText)) {
     const vidPath = POOR_SAVAGE_VIDEO_PATH;
     try {
       if (fs.existsSync(vidPath)) {
@@ -2511,7 +2536,7 @@ client.on('messageCreate', async (message) => {
   }
 
   // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + random Miaow image (only when author has Miðland role)
-  if (hasMiaowWhereTrigger(message.content)) {
+  if (hasMiaowWhereTrigger(gvModerationText)) {
     const hasTriggerRole = message.member?.roles?.cache?.has(MIAOW_TRIGGER_ROLE_ID);
     if (hasTriggerRole) {
       try {
@@ -2533,13 +2558,13 @@ client.on('messageCreate', async (message) => {
   }
 
   // "Soon" trigger: react with :soon:; for game-related phrases only (when can we play, is the game up, any eta, etc.) also post a random Soon meme image
-  if (hasSoonTrigger(message.content)) {
+  if (hasSoonTrigger(gvModerationText)) {
     try {
       await message.react(SOON_EMOJI);
     } catch (err) {
       console.error('Soon emoji reaction failed (emoji must exist in this server):', err.message);
     }
-    if (hasSoonTriggerWithImage(message.content)) {
+    if (hasSoonTriggerWithImage(gvModerationText)) {
       try {
         const soonPath = getRandomSoonMeme();
         if (soonPath) {
@@ -2557,7 +2582,7 @@ client.on('messageCreate', async (message) => {
   }
 
   // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video. Delete in gv-general, repost to hold channel.
-  if (hasSpamSlur(message.content)) {
+  if (hasSpamSlur(gvModerationText)) {
     const userId = message.author.id;
     const repeated = isRepeatedSlurOffender(userId);
     recordSlurReply(userId);
@@ -2568,57 +2593,57 @@ client.on('messageCreate', async (message) => {
   }
 
   // Racial/religious stereotype bait (e.g. "isn't everyone south of the border Mexican?") — hold channel, no safe-context bypass
-  if (hasStereotypeRaceReligionRedirect(message.content)) {
+  if (hasStereotypeRaceReligionRedirect(gvModerationText)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
   // Psychiatric / disability slurs (e.g. "schizo", "they're autistic") — hold channel, no safe-context bypass
-  if (hasMedicalPsychiatricInsult(message.content)) {
+  if (hasMedicalPsychiatricInsult(gvModerationText)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
   // "You're a danger" / "danger to players" (IRL or targeting users) — before safe-context so bare "players" doesn't bypass.
-  if (hasDangerFramingTargetPlayersOrHumans(message.content)) {
+  if (hasDangerFramingTargetPlayersOrHumans(gvModerationText)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
 
   // Safe-context short-circuit for normal GV chat before geopolitical/off-topic/religion paths.
   // Hard filters above (slurs / stereotype / medical) remain non-bypassable.
-  if (hasSafeContext(message.content)) {
-    if (DEBUG) console.log('[skip] safe-context word in:', message.content.slice(0, 80));
+  if (hasSafeContext(gvModerationText)) {
+    if (DEBUG) console.log('[skip] safe-context word in:', gvModerationText.slice(0, 80));
     return; // game/community context – don't trigger
   }
 
   // Geopolitical keywords (states, NATO, UN, sanctions, invasion, regime, …)
-  if (hasGeopoliticalHardRedirect(message.content)) {
+  if (hasGeopoliticalHardRedirect(gvModerationText)) {
     const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardMovedHold(message, randomGif);
     return;
   }
 
   // IRL Balkans / former Yugoslavia discussion (travel, history, identity) — same hold flow as geopolitical
-  if (hasBalkansRealWorldOffTopicRedirect(message.content)) {
+  if (hasBalkansRealWorldOffTopicRedirect(gvModerationText)) {
     const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardMovedHold(message, randomGif);
     return;
   }
 
   // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, repost to hold channel.
-  if (hasOffTopicPhrase(message.content)) {
+  if (hasOffTopicPhrase(gvModerationText)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
-  if (messageContainsSafeTenorLink(message.content)) {
+  if (messageContainsSafeTenorLink(gvModerationText)) {
     if (DEBUG) console.log('[skip] message contains safe tenor GIF (e.g. kittens)');
     return; // whitelisted tenor link – don't trigger religion/politics
   }
 
   // Religion/politics/goy: trigger if ≥80% filter words OR ideological phrases OR obvious religion/politics phrases
-  if (!shouldTriggerReligionPolitics(message.content)) {
-    if (DEBUG) console.log('[skip] not religion/politics:', message.content.slice(0, 80));
+  if (!shouldTriggerReligionPolitics(gvModerationText)) {
+    if (DEBUG) console.log('[skip] not religion/politics:', gvModerationText.slice(0, 80));
     return;
   }
 
