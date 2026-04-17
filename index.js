@@ -556,7 +556,7 @@ const SAFE_CONTEXT_BASE = [
   'state of war', 'gloria victis', 'black eye games',
   // Game title context ("God of War") should not trigger religion/politics moderation.
   'god of war',
-  'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismirs', 'sangmar', 'sangmir', 'sangarians',
+  'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismir', 'ismirs', 'sangmar', 'sangmir', 'sangarians',
   'empire of azebia', 'azebian', 'midlandic', 'sangmar empire',
   'forefather', 'greatfather', 'khagan', 'zenith',
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
@@ -1239,7 +1239,7 @@ function hasGameDangerLoreContext(text) {
   const lower = stripDiacritics(text.toLowerCase());
   if (!/\bdanger(ous)?\b/.test(lower)) return false;
   if (
-    /\b(sangmar|sangmir|midland|midlanders|azebia|azebs|nordheim|ismirs|sangarians|gloria victis|\bgv\b|in[- ]game|ingame|mmorpg|nation|nations|guild|guilds|siege|faction|lore|npc|boss|realm|enemy|empire|emperor|khagan|forefather|greatfather|zenith|sangmar empire)\b/i.test(lower)
+    /\b(sangmar|sangmir|midland|midlanders|azebia|azebs|nordheim|ismirs?|sangarians|gloria victis|\bgv\b|in[- ]game|ingame|mmorpg|nation|nations|guild|guilds|siege|faction|lore|npc|boss|realm|enemy|empire|emperor|khagan|forefather|greatfather|zenith|sangmar empire)\b/i.test(lower)
   ) {
     return true;
   }

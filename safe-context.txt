@@ -9,6 +9,8 @@
 # Community pings (religion/politics skip only — Balkans/geopolitical/slurs still run first in code):
 ser savage
 sir savage
+# Ismir (singular; Elder Futhark ᛁ ᛋ ᛗ ᛁ ᚱ) — also in SAFE_CONTEXT_BASE; listed here for clarity
+ismir
 
 # --- Official dev wiki (main + linked feature pages) ---
 character statistics
