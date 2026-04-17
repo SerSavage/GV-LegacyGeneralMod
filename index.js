@@ -773,6 +773,21 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Match phrase as whole words (not embedded in another word/URL slug).
+ * Multi-word phrases use flexible whitespace; hyphenated tokens (e.g. far-left, neo-nazi) are one word.
+ */
+function matchesPhraseOrWordBoundaries(text, phrase) {
+  const lower = stripDiacritics(String(text || '').toLowerCase());
+  const p = String(phrase || '').trim().toLowerCase();
+  if (!p) return false;
+  if (p.includes(' ')) {
+    const parts = p.split(/\s+/).map((t) => escapeRegex(t));
+    return new RegExp(`\\b${parts.join('\\s+')}\\b`, 'i').test(lower);
+  }
+  return new RegExp(`\\b${escapeRegex(p)}\\b`, 'i').test(lower);
+}
+
 // Normalize text so prolonged/leetspeak still matches trigger words:
 // - Collapse 2+ repeated letters (goooood → god, reeee → re)
 // - Replace common number-for-letter (0→o, 1→i, 3→e, 4→a, 5→s, 7→t, 8→b)
@@ -838,10 +853,10 @@ function hasOffTopicPhrase(text) {
 // Broad racial/religious stereotype generalizations (same redirect as vulgar off-topic). Runs before safe-context so it is not bypassed.
 function hasStereotypeRaceReligionRedirect(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
+  const lower = stripDiacritics(text.toLowerCase());
   const group = /\b(muslim|muslims|islam|jew|jews|jewish|mexican|mexicans|arab|arabs|black people|whites|white people|asian|asians|indian|indians|hindu|hindus|christian|christians|catholic|catholics|protestant|mormon|mormons|latino|latinos|hispanic|illegal aliens?|immigrants?)\b/i;
 
-  if (lower.includes('south of the border') && /\b(mexican|mexico|latino|hispanic|illegal|border)\b/.test(lower)) return true;
+  if (matchesPhraseOrWordBoundaries(lower, 'south of the border') && /\b(mexican|mexico|latino|hispanic|illegal|border)\b/.test(lower)) return true;
   if (/\bisn'?t everyone\b/.test(lower) && group.test(text)) return true;
   if (/\baren'?t (all|everyone|most people)\b/.test(lower) && group.test(text)) return true;
   if (/\bwhy (do|are) (all|most|every)\b/.test(lower) && group.test(text)) return true;
@@ -849,9 +864,9 @@ function hasStereotypeRaceReligionRedirect(text) {
   if (/\bdo (all|most) (muslims|jews|christians|hindus|mormons)\b/i.test(lower)) return true;
   if (/\b(is|are) (all|most) (muslims|jews|christians|hindus|mexicans)\b/i.test(lower)) return true;
   // Racialized “brown people” bait / UK meme patterns (desktop list)
-  if (lower.includes('soft spot for brown people')) return true;
-  if (lower.includes('brown spot for') && lower.includes('brown people')) return true;
-  if (lower.includes('many such cases') && (/\buk\b/i.test(lower) || lower.includes('united kingdom'))) return true;
+  if (matchesPhraseOrWordBoundaries(lower, 'soft spot for brown people')) return true;
+  if (matchesPhraseOrWordBoundaries(lower, 'brown spot for') && matchesPhraseOrWordBoundaries(lower, 'brown people')) return true;
+  if (matchesPhraseOrWordBoundaries(lower, 'many such cases') && (/\buk\b/i.test(lower) || matchesPhraseOrWordBoundaries(lower, 'united kingdom'))) return true;
   return false;
 }
 
@@ -1029,7 +1044,11 @@ function hasGeopoliticalHardRedirect(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
   for (const s of GEOPOLITICAL_HARD_SUBSTRINGS) {
-    if (lower.includes(s.trim())) return true;
+    const term = s.trim();
+    if (!term) continue;
+    // Match as terms/phrases, not as substrings inside larger words/URLs (e.g. "anatomy" must not hit "nato").
+    const termRe = new RegExp(`\\b${escapeRegex(term).replace(/\s+/g, '\\s+')}\\b`, 'i');
+    if (termRe.test(lower)) return true;
   }
   // "sanction" at word start / after space (sanctioning, sanctions already caught)
   if (/\bsanction/i.test(text)) return true;
@@ -1042,14 +1061,14 @@ function hasGeopoliticalHardRedirect(text) {
 function hasBalkansRealWorldOffTopicRedirect(text) {
   if (!text || typeof text !== 'string') return false;
   if (hasLanguageLearningContext(text)) return false;
-  const lower = text.toLowerCase();
-  if (lower.includes('bosnia') || lower.includes('bosnian') || lower.includes('bosniak')) return true;
-  if (lower.includes('mostar') || lower.includes('sarajevo') || lower.includes('srebrenica')) return true;
+  const lower = stripDiacritics(text.toLowerCase());
+  const balkanSingles = ['bosnia', 'bosnian', 'bosniak', 'mostar', 'sarajevo', 'srebrenica', 'yugoslav', 'archduke'];
+  if (balkanSingles.some((w) => matchesPhraseOrWordBoundaries(lower, w))) return true;
+  if (matchesPhraseOrWordBoundaries(lower, 'franz ferdinand')) return true;
   if (/\b(serbia|serbian|serbs?)\b/.test(lower)) return true;
   if (/\b(croatia|croatian|croats?)\b/.test(lower)) return true;
-  if (lower.includes('yugoslav') || /\bbalkans?\b/.test(lower)) return true;
+  if (/\bbalkans?\b/.test(lower)) return true;
   if (/\b(kosovo|montenegro|skopje|tirana|belgrade|beograd|ljubljana)\b/.test(lower)) return true;
-  if (lower.includes('archduke') || lower.includes('franz ferdinand')) return true;
   if (/\bbosnian\s+serb\b|\bserb\s+nationalist\b|\bnationalist\s+serb\b/.test(lower)) return true;
   return false;
 }
@@ -1057,8 +1076,8 @@ function hasBalkansRealWorldOffTopicRedirect(text) {
 // Check if message contains any goy-related term (religion filter)
 function hasGoyTerm(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
-  return GOY_TERMS.some(term => lower.includes(term));
+  const lower = stripDiacritics(text.toLowerCase());
+  return GOY_TERMS.some((term) => new RegExp(`\\b${escapeRegex(term)}\\b`, 'i').test(lower));
 }
 
 // Tenor GIF IDs that are allowed in gv-general even if the URL slug contains trigger words (e.g. trump-kittens = cats, not politics)
@@ -1251,8 +1270,7 @@ function hasSafeContext(text) {
 
 function messageContainsIdeologicalPhrase(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
-  return IDEOLOGICAL_PHRASES.some(p => lower.includes(p));
+  return IDEOLOGICAL_PHRASES.some((p) => matchesPhraseOrWordBoundaries(text, p));
 }
 
 // Obvious religion/politics phrases – trigger even if 80% word ratio isn't met
@@ -1274,20 +1292,25 @@ const RELIGION_POLITICS_PHRASES = [
 ].map(p => p.toLowerCase());
 function messageContainsReligionPoliticsPhrase(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
-  return RELIGION_POLITICS_PHRASES.some(p => lower.includes(p));
+  return RELIGION_POLITICS_PHRASES.some((p) => matchesPhraseOrWordBoundaries(text, p));
 }
 
 /** Obvious religious discussion — do not treat "god" as casual if these appear. */
 function hasStrongReligionMarker(text) {
   const lower = stripDiacritics(text.toLowerCase());
   const markers = [
-    'church', 'mosque', 'synagogue', 'temple ', 'bible', 'quran', 'koran', 'gospel', 'torah', 'talmud',
-    'jesus', 'christ ', 'christian', 'muslim', 'islam', 'jewish', 'judaism', 'allah', 'hindu', 'buddh',
-    'pray', 'prayer', 'worship', 'sermon', 'pastor', 'priest', 'imam', 'rabbi', 'atheis', 'agnostic',
-    'sacrament', 'communion', 'baptis', 'eucharist',
+    'church', 'mosque', 'synagogue', 'temple', 'bible', 'quran', 'koran', 'gospel', 'torah', 'talmud',
+    'jesus', 'christ', 'christian', 'muslim', 'islam', 'jewish', 'judaism', 'allah',
+    'pray', 'prayer', 'prayers', 'worship', 'sermon', 'pastor', 'priest', 'imam', 'rabbi', 'agnostic',
+    'sacrament', 'communion', 'eucharist',
   ];
-  return markers.some((m) => lower.includes(m));
+  if (markers.some((m) => matchesPhraseOrWordBoundaries(lower, m))) return true;
+  // Prefix stems (buddhist, atheist, baptism, hinduism) — word-start only, not embedded in unrelated tokens
+  if (/\bbuddh\w*/i.test(lower)) return true;
+  if (/\batheis\w*/i.test(lower)) return true;
+  if (/\bbaptis\w*/i.test(lower)) return true;
+  if (/\bhindu\w*/i.test(lower)) return true;
+  return false;
 }
 
 /** "God" as exclamation / filler (not theology) — e.g. "god would it be gross". */
@@ -1374,7 +1397,11 @@ function wordMatchesTriggerWord(word) {
 function wordContainsGoy(word) {
   if (!word) return false;
   const lower = word.toLowerCase();
-  return GOY_TERMS.some(term => lower.includes(term));
+  const normalized = normalizeForMatch(lower);
+  return GOY_TERMS.some((term) => {
+    const tn = normalizeForMatch(term);
+    return lower === term || normalized === term || lower === tn || normalized === tn;
+  });
 }
 
 /** Returns true if message is mostly (≥80%) trigger words, or has ≥2 trigger words (catches e.g. "killing Muslims is based"). */
