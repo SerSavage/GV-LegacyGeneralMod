@@ -830,33 +830,6 @@ function countElderFutharkRunes(text) {
   return m ? m.length : 0;
 }
 
-/**
- * Runic / Old Norse epigraphy context — inspired by runestone corpora (e.g. Swedish inscriptions) and CLTK’s rune docs,
- * without bundling HF datasets or a Python stack. Lets gv-general tolerate rune-only or rune-heavy chat when it is not slurs.
- */
-const RUNIC_EPIGRAPHY_PHRASE_RES = [
-  /\bold\s+norse\b/i,
-  /\bproto[- ]?norse\b/i,
-  /\belder\s+futhark\b/i,
-  /\byounger\s+futhark\b/i,
-  /\b(?:viking|norse)\s+runes?\b/i,
-  /\brune\s+stones?\b/i,
-  /\brunestones?\b/i,
-  /\b(?:futhark|futhork)\b/i,
-  /\b(?:epigraphy|transliterat(?:e|ion|ing))\b/i,
-  /\b(?:runic|runes)\b/i,
-];
-function hasRunicEpigraphySafeContext(text) {
-  if (!text || typeof text !== 'string') return false;
-  const lower = stripDiacritics(text.toLowerCase());
-  if (RUNIC_EPIGRAPHY_PHRASE_RES.some((re) => re.test(lower))) return true;
-  const runeCount = countElderFutharkRunes(text);
-  if (runeCount < 3) return false;
-  const norm = normalizeRunesForContextScan(text);
-  if (hasSpamSlur(text) || hasSpamSlur(norm)) return false;
-  return true;
-}
-
 // Check if message text contains any trigger word as a whole word (case-insensitive).
 // Also checks normalized form so "goooood", "g0d", "pol1t1cs" match "god", "politics".
 function hasTriggerWord(text) {
@@ -886,6 +859,36 @@ function hasSpamSlur(text) {
     if (tc.length >= 4 && compact.includes(tc)) return true;
   }
   return false;
+}
+
+/**
+ * Unicode runes (U+16A0–U+16FF): allow in gv-general when ≥3 runes and slur scan passes on raw + transliterated text.
+ * Used for early skip (before harassment/spam/geopolitics) and for safe-context — runes-only, no English keywords required.
+ */
+const RUNIC_EPIGRAPHY_PHRASE_RES = [
+  /\bold\s+norse\b/i,
+  /\bproto[- ]?norse\b/i,
+  /\belder\s+futhark\b/i,
+  /\byounger\s+futhark\b/i,
+  /\b(?:viking|norse)\s+runes?\b/i,
+  /\brune\s+stones?\b/i,
+  /\brunestones?\b/i,
+  /\b(?:futhark|futhork)\b/i,
+  /\b(?:epigraphy|transliterat(?:e|ion|ing))\b/i,
+  /\b(?:runic|runes)\b/i,
+];
+function isRunicInscriptionAllowed(text) {
+  if (!text || typeof text !== 'string') return false;
+  if (countElderFutharkRunes(text) < 3) return false;
+  const norm = normalizeRunesForContextScan(text);
+  if (hasSpamSlur(text) || hasSpamSlur(norm)) return false;
+  return true;
+}
+function hasRunicEpigraphySafeContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = stripDiacritics(text.toLowerCase());
+  if (RUNIC_EPIGRAPHY_PHRASE_RES.some((re) => re.test(lower))) return true;
+  return isRunicInscriptionAllowed(text);
 }
 
 // Exception: "mad men" / "lunatics" in idiom/quote context (e.g. "nation filled with mad men and lunatics") — don't trigger off-topic
@@ -2461,6 +2464,13 @@ client.on('messageCreate', async (message) => {
 
   if (!message.content) {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
+    return;
+  }
+
+  // Elder Futhark / runic text: skip remaining gv-general moderation (harassment, slur GIF, geopolitics, religion filter, …).
+  // CSAM/blocked-media/spam-watch already ran above. Slurs still block via hasSpamSlur on raw + transliterated text.
+  if (isRunicInscriptionAllowed(message.content)) {
+    if (DEBUG) console.log('[skip] runic inscription (Unicode runes + slur scan):', message.content.slice(0, 80));
     return;
   }
 
