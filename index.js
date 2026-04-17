@@ -800,6 +800,19 @@ function normalizeForMatch(text) {
   return t;
 }
 
+/** Minimal Elder Futhark transliteration used by players (e.g. "ᛁ ᛋ ᛗ ᛁ ᚱ" -> "ismir"). */
+function transliterateRunesToLatin(text) {
+  if (!text || typeof text !== 'string') return '';
+  const map = new Map([
+    ['ᚠ', 'f'], ['ᚢ', 'u'], ['ᚦ', 'th'], ['ᚨ', 'a'], ['ᚱ', 'r'], ['ᚲ', 'k'],
+    ['ᚷ', 'g'], ['ᚹ', 'w'], ['ᚺ', 'h'], ['ᚻ', 'h'], ['ᚾ', 'n'], ['ᛁ', 'i'],
+    ['ᛃ', 'j'], ['ᛇ', 'ei'], ['ᛈ', 'p'], ['ᛉ', 'z'], ['ᛊ', 's'], ['ᛋ', 's'],
+    ['ᛏ', 't'], ['ᛒ', 'b'], ['ᛖ', 'e'], ['ᛗ', 'm'], ['ᛚ', 'l'], ['ᛜ', 'ng'],
+    ['ᛝ', 'ng'], ['ᛞ', 'd'], ['ᛟ', 'o'],
+  ]);
+  return Array.from(String(text || '')).map((ch) => map.get(ch) || ch).join('');
+}
+
 // Check if message text contains any trigger word as a whole word (case-insensitive).
 // Also checks normalized form so "goooood", "g0d", "pol1t1cs" match "god", "politics".
 function hasTriggerWord(text) {
@@ -875,7 +888,9 @@ function hasStereotypeRaceReligionRedirect(text) {
 const MEDICAL_PSYCH_INSULT_SUBSTRINGS = [
   'schizo', 'schizophren', 'schizoaffective',
   'psychopath', 'psychotic', 'psychosis', 'sociopath',
-  'retard', 'retarded', 'libtard', 'conservatard', // leetspeak variants partly caught by normalizeForMatch in check below
+  // Banter allowlist: plain "retard"/"retarded"/"fucktard" are allowed in gv-general.
+  // Keep political-derivative slurs blocked here.
+  'libtard', 'conservatard', // leetspeak variants partly caught by normalizeForMatch in check below
   'autist', 'autistic', 'asperger', 'aspie', 'tism',
   'manic', 'maniac',
   'delusional', 'delusion',
@@ -905,31 +920,22 @@ function hasMedicalPsychiatricInsult(text) {
   const lower = text.toLowerCase();
   const normalized = normalizeForMatch(lower);
 
-  // Many users use "retarded" as a casual "broken/buggy" adjective for game issues.
-  // If the post is clearly game/platform context, don't treat "retarded"/"retard" as a medical slur.
-  const looksGameLikeForRetard =
-    /\b(steam|mortal online|gloria victis|in[- ]game|ingame|mmorpg|looting?|loot)\b/.test(lower)
-    || /\bbug(s)?\b/.test(lower);
-
   const compact = normalized.replace(/[^a-z]/g, '');
   for (const sub of MEDICAL_PSYCH_INSULT_SUBSTRINGS) {
     if (lower.includes(sub)) {
-      if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
       return true;
     }
     const subNorm = normalizeForMatch(sub);
     if (subNorm.length >= 3 && normalized.includes(subNorm)) {
-      if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
       return true;
     }
     if (sub.includes(' ') && sub.replace(/\s+/g, '').length >= 5 && compact.includes(sub.replace(/\s+/g, ''))) {
-      if ((sub === 'retard' || sub === 'retarded') && looksGameLikeForRetard) return false;
       return true;
     }
   }
   return false;
 }
-console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (some "retarded" uses ignored in game context).`);
+console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (banter allowlist excludes retard/retarded).`);
 
 // Harassment / race-bait with evasion-resistant normalization ("de lusional", "d3lusional", "SirDelulu", etc.).
 // Same rules for all users — routed to hold/off-topic flow with no safe-context bypass.
@@ -1259,12 +1265,13 @@ function hasDangerFramingTargetPlayersOrHumans(text) {
 // If message contains any safe-context word (game/community talk), don't trigger
 function hasSafeContext(text) {
   if (!text || typeof text !== 'string') return false;
-  if (hasLanguageLearningContext(text)) return true;
-  const lower = text.toLowerCase();
+  const transliterated = transliterateRunesToLatin(text);
+  if (hasLanguageLearningContext(text) || hasLanguageLearningContext(transliterated)) return true;
+  const lower = transliterated.toLowerCase();
   for (const word of SAFE_CONTEXT_WORDS) {
     if (lower.includes(word)) return true;
   }
-  if (hasGameDangerLoreContext(text)) return true;
+  if (hasGameDangerLoreContext(text) || hasGameDangerLoreContext(transliterated)) return true;
   return false;
 }
 
