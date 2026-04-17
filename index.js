@@ -813,6 +813,16 @@ function transliterateRunesToLatin(text) {
   return Array.from(String(text || '')).map((ch) => map.get(ch) || ch).join('');
 }
 
+/**
+ * Runes with spaces between letters become "i s m i r" not "ismir" — collapse known faction spellings
+ * so safe-context substring checks (ismir / ismirs) match.
+ */
+function normalizeRunesForContextScan(text) {
+  let t = transliterateRunesToLatin(String(text || ''));
+  t = t.replace(/\bi\s+s\s+m\s+i\s+r\b/gi, 'ismir');
+  return t;
+}
+
 // Check if message text contains any trigger word as a whole word (case-insensitive).
 // Also checks normalized form so "goooood", "g0d", "pol1t1cs" match "god", "politics".
 function hasTriggerWord(text) {
@@ -1265,13 +1275,13 @@ function hasDangerFramingTargetPlayersOrHumans(text) {
 // If message contains any safe-context word (game/community talk), don't trigger
 function hasSafeContext(text) {
   if (!text || typeof text !== 'string') return false;
-  const transliterated = transliterateRunesToLatin(text);
-  if (hasLanguageLearningContext(text) || hasLanguageLearningContext(transliterated)) return true;
-  const lower = transliterated.toLowerCase();
+  const normalizedRunes = normalizeRunesForContextScan(text);
+  if (hasLanguageLearningContext(text) || hasLanguageLearningContext(normalizedRunes)) return true;
+  const lower = stripDiacritics(normalizedRunes.toLowerCase());
   for (const word of SAFE_CONTEXT_WORDS) {
     if (lower.includes(word)) return true;
   }
-  if (hasGameDangerLoreContext(text) || hasGameDangerLoreContext(transliterated)) return true;
+  if (hasGameDangerLoreContext(text) || hasGameDangerLoreContext(normalizedRunes)) return true;
   return false;
 }
 
