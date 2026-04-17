@@ -24,6 +24,9 @@ const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGE
 // Admin-only channel: we skip gv-general triggers for messages here; welcomes are only from guildMemberAdd (not from Carl-bot log)
 const ADMIN_JOIN_CHANNEL_ID = String(process.env.ADMIN_JOIN_CHANNEL_ID || '1166746316999757864');
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
+// gv-general: after a runic-only bypass message, post a short transliteration (Latin letters, not English translation)
+const RUNE_LATIN_FOLLOWUP_ENABLED = process.env.RUNE_LATIN_FOLLOWUP_ENABLED !== '0' && process.env.RUNE_LATIN_FOLLOWUP_ENABLED !== 'false';
+const RUNE_LATIN_FOLLOWUP_DELAY_MS = Math.max(0, parseInt(process.env.RUNE_LATIN_FOLLOWUP_DELAY_MS, 10) || 800);
 // Message to send when a word is detected
 // #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
@@ -820,17 +823,30 @@ function normalizeForMatch(text) {
   return t;
 }
 
-/** Minimal Elder Futhark transliteration used by players (e.g. "ᛁ ᛋ ᛗ ᛁ ᚱ" -> "ismir"). */
+/**
+ * Unicode Runic block (U+16A0–U+16F8) → Latin transliteration (Unicode name–based; approximate for Younger variants).
+ * Non-runic characters (e.g. punctuation, Braille) pass through unchanged.
+ */
+const RUNIC_UNICODE_TO_LATIN = new Map([
+  ['ᚠ', 'f'], ['ᚡ', 'v'], ['ᚢ', 'u'], ['ᚣ', 'yr'], ['ᚤ', 'y'], ['ᚥ', 'w'],
+  ['ᚦ', 'th'], ['ᚧ', 'eth'], ['ᚨ', 'a'], ['ᚩ', 'o'], ['ᚪ', 'a'], ['ᚫ', 'ae'],
+  ['ᚬ', 'o'], ['ᚭ', 'o'], ['ᚮ', 'o'], ['ᚯ', 'oe'], ['ᚰ', 'on'], ['ᚱ', 'r'], ['ᚲ', 'k'], ['ᚳ', 'c'],
+  ['ᚴ', 'k'], ['ᚵ', 'g'], ['ᚶ', 'ng'], ['ᚷ', 'g'], ['ᚸ', 'g'], ['ᚹ', 'w'],
+  ['ᚺ', 'h'], ['ᚻ', 'h'], ['ᚼ', 'h'], ['ᚽ', 'h'], ['ᚾ', 'n'], ['ᚿ', 'n'], ['ᛀ', 'n'],
+  ['ᛁ', 'i'], ['ᛂ', 'e'], ['ᛃ', 'j'], ['ᛄ', 'j'], ['ᛅ', 'ae'], ['ᛆ', 'a'], ['ᛇ', 'ei'],
+  ['ᛈ', 'p'], ['ᛉ', 'z'], ['ᛊ', 's'], ['ᛋ', 's'], ['ᛌ', 's'], ['ᛍ', 'c'], ['ᛎ', 'z'],
+  ['ᛏ', 't'], ['ᛐ', 't'], ['ᛑ', 'd'], ['ᛒ', 'b'], ['ᛓ', 'b'], ['ᛔ', 'p'], ['ᛕ', 'p'],
+  ['ᛖ', 'e'], ['ᛗ', 'm'], ['ᛘ', 'm'], ['ᛙ', 'm'], ['ᛚ', 'l'], ['ᛛ', 'l'], ['ᛜ', 'ng'], ['ᛝ', 'ng'],
+  ['ᛞ', 'd'], ['ᛟ', 'o'], ['ᛠ', 'ea'], ['ᛡ', 'ior'], ['ᛢ', 'cw'], ['ᛣ', 'k'], ['ᛤ', 'k'],
+  ['ᛥ', 'st'], ['ᛦ', 'r'], ['ᛧ', 'r'], ['ᛨ', 'r'], ['ᛩ', 'q'], ['ᛪ', 'x'],
+  ['᛫', ' '], ['᛬', ' · '], ['᛭', '+'],
+  ['ᛮ', '17'], ['ᛯ', '18'], ['ᛰ', '19'],
+  ['ᛱ', 'k'], ['ᛲ', 'sh'], ['ᛳ', 'oo'], ['ᛴ', 'os'], ['ᛵ', 'is'], ['ᛶ', 'eh'], ['ᛷ', 'ac'], ['ᛸ', 'aesc'],
+]);
+
 function transliterateRunesToLatin(text) {
   if (!text || typeof text !== 'string') return '';
-  const map = new Map([
-    ['ᚠ', 'f'], ['ᚢ', 'u'], ['ᚦ', 'th'], ['ᚨ', 'a'], ['ᚱ', 'r'], ['ᚲ', 'k'],
-    ['ᚷ', 'g'], ['ᚹ', 'w'], ['ᚺ', 'h'], ['ᚻ', 'h'], ['ᚾ', 'n'], ['ᛁ', 'i'],
-    ['ᛃ', 'j'], ['ᛇ', 'ei'], ['ᛈ', 'p'], ['ᛉ', 'z'], ['ᛊ', 's'], ['ᛋ', 's'],
-    ['ᛏ', 't'], ['ᛒ', 'b'], ['ᛖ', 'e'], ['ᛗ', 'm'], ['ᛚ', 'l'], ['ᛜ', 'ng'],
-    ['ᛝ', 'ng'], ['ᛞ', 'd'], ['ᛟ', 'o'],
-  ]);
-  return Array.from(String(text || '')).map((ch) => map.get(ch) || ch).join('');
+  return Array.from(text).map((ch) => RUNIC_UNICODE_TO_LATIN.get(ch) || ch).join('');
 }
 
 /**
@@ -880,6 +896,43 @@ function hasSpamSlur(text) {
     if (tc.length >= 4 && compact.includes(tc)) return true;
   }
   return false;
+}
+
+/**
+ * Post a normal channel message (not a reply) with Latin transliteration after gv-general runic bypass.
+ * Re-fetches the message after a delay so we skip if it was deleted (e.g. by moderation elsewhere).
+ */
+function scheduleRunicLatinFollowUp(message) {
+  if (!RUNE_LATIN_FOLLOWUP_ENABLED) return;
+  const channel = message.channel;
+  const messageId = message.id;
+  const delay = RUNE_LATIN_FOLLOWUP_DELAY_MS;
+  setTimeout(() => {
+    (async () => {
+      try {
+        if (!channel?.isTextBased?.()) return;
+        const fresh = await channel.messages.fetch(messageId).catch(() => null);
+        if (!fresh) return;
+        const raw = fresh.content ? String(fresh.content) : '';
+        const gvModerationText = stripOuterQuotesForGeneral(raw.trim()) || raw;
+        if (countElderFutharkRunes(gvModerationText) < 3) return;
+        const norm = normalizeRunesForContextScan(gvModerationText);
+        if (hasSpamSlur(gvModerationText) || hasSpamSlur(norm)) return;
+        const latin = transliterateRunesToLatin(gvModerationText);
+        if (!latin) return;
+        const header = '**Runic → Latin (approx.)**\n';
+        const maxBody = 2000 - header.length;
+        let body = latin;
+        if (body.length > maxBody) body = body.slice(0, maxBody - 1) + '…';
+        await channel.send({
+          content: header + body,
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        if (DEBUG) console.error('[runic-latin] follow-up failed:', err.message || err);
+      }
+    })();
+  }, delay);
 }
 
 /**
@@ -2497,6 +2550,7 @@ client.on('messageCreate', async (message) => {
   // CSAM/blocked-media/spam-watch already ran above. Slurs still block via hasSpamSlur on raw + transliterated text.
   if (isRunicInscriptionAllowed(gvModerationText)) {
     if (DEBUG) console.log('[skip] runic inscription (Unicode runes + slur scan):', gvModerationText.slice(0, 80));
+    scheduleRunicLatinFollowUp(message);
     return;
   }
 

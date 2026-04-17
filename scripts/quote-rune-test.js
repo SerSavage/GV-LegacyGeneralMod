@@ -10,8 +10,8 @@ const stripBundle = idx.slice(
 const bundle =
   stripBundle +
   idx.slice(idx.indexOf('const SPAM_SLUR_TERMS'), idx.indexOf('// Religion-related "goy"')) +
-  idx.slice(idx.indexOf('function normalizeForMatch'), idx.indexOf('function transliterateRunesToLatin')) +
-  idx.slice(idx.indexOf('function transliterateRunesToLatin'), idx.indexOf('function normalizeRunesForContextScan')) +
+  idx.slice(idx.indexOf('function normalizeForMatch'), idx.indexOf('const RUNIC_UNICODE_TO_LATIN')) +
+  idx.slice(idx.indexOf('const RUNIC_UNICODE_TO_LATIN'), idx.indexOf('function normalizeRunesForContextScan')) +
   idx.slice(idx.indexOf('function normalizeRunesForContextScan'), idx.indexOf('function countElderFutharkRunes')) +
   idx.slice(idx.indexOf('function countElderFutharkRunes'), idx.indexOf('function hasTriggerWord')) +
   idx.slice(idx.indexOf('function hasSpamSlur'), idx.indexOf('const RUNIC_EPIGRAPHY_PHRASE_RES')) +
