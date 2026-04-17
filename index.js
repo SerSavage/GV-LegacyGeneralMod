@@ -852,10 +852,11 @@ function hasSpamSlur(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
   if (SPAM_SLUR_TERMS.some((term) => lower.includes(term))) return true;
-  const compact = normalizeForMatch(lower).replace(/[^a-z0-9]/g, '');
+  // ! → i for compact scan only (evasion: n!gger → niger); avoids tc "nger" matching inside "longer", "stronger", …
+  const compact = normalizeForMatch(lower.replace(/!/g, 'i')).replace(/[^a-z0-9]/g, '');
   for (const term of SPAM_SLUR_TERMS) {
     if (term.length < 4) continue;
-    const tc = normalizeForMatch(term).replace(/[^a-z0-9]/g, '');
+    const tc = normalizeForMatch(term.replace(/!/g, 'i')).replace(/[^a-z0-9]/g, '');
     if (tc.length >= 4 && compact.includes(tc)) return true;
   }
   return false;
