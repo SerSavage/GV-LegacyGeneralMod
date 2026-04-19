@@ -1512,6 +1512,87 @@ function hasDangerFramingTargetPlayersOrHumans(text) {
   return false;
 }
 
+// When true (default): gv-general skips English-centric holds (off-topic phrase bag, religion/politics ratio, geopolitical, …)
+// for messages that look primarily non–English casual chat. Serious slurs (hasSpamSlur) still apply first.
+const MULTILINGUAL_BANTER_BYPASS =
+  process.env.MULTILINGUAL_BANTER_BYPASS !== '0' && process.env.MULTILINGUAL_BANTER_BYPASS !== 'false';
+
+const MULTILINGUAL_FUNCTION_WORDS = new Set(
+  [
+    // French
+    'le', 'la', 'les', 'un', 'une', 'des', 'du', 'de', 'et', 'est', 'que', 'qui', 'quoi', 'dont', 'ou', 'où',
+    'pas', 'pour', 'dans', 'sur', 'avec', 'sous', 'chez', 'vers', 'entre', 'par', 'sans', 'mais', 'donc', 'car',
+    'ce', 'ces', 'cette', 'cet', 'cela', 'ca', 'ça', 'celui', 'celle', 'ceux', 'celles', 'comme', 'aussi', 'alors',
+    'tres', 'très', 'plus', 'moins', 'bien', 'tout', 'tous', 'toute', 'toutes', 'rien', 'jamais', 'toujours', 'encore',
+    'nous', 'vous', 'ils', 'elles', 'je', 'tu', 'il', 'elle', 'on', 'mon', 'ton', 'son', 'ma', 'ta', 'sa', 'mes', 'tes', 'ses',
+    'notre', 'nos', 'votre', 'vos', 'leur', 'leurs', 'au', 'aux', 'du', 'des', 'en', 'y', 'ne', 'ni', 'meme', 'même',
+    'fait', 'faire', 'suis', 'es', 'est', 'sommes', 'etes', 'êtes', 'sont', 'ai', 'as', 'a', 'avons', 'avez', 'ont',
+    'ete', 'été', 'dis', 'dit', 'voir', 'sais', 'peux', 'dois', 'veux', 'peut', 'doit', 'veut', 'quand', 'comment', 'pourquoi',
+    'parce', 'quel', 'quelle', 'quels', 'quelles', 'chose', 'choses', 'autre', 'autres', 'deja', 'déjà', 'ici', 'la', 'là',
+    // Spanish
+    'el', 'los', 'las', 'una', 'unos', 'unas', 'del', 'al', 'y', 'o', 'pero', 'sino', 'como', 'muy', 'mas', 'más', 'menos',
+    'hay', 'soy', 'eres', 'somos', 'sois', 'esta', 'está', 'están', 'este', 'esta', 'esto', 'ese', 'esa', 'eso', 'aqui', 'aquí',
+    'porque', 'cuando', 'donde', 'dónde', 'quien', 'quién', 'algo', 'nada', 'tambien', 'también', 'solo', 'sólo', 'ya',
+    // German
+    'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'einem', 'einen', 'und', 'oder', 'aber', 'nicht',
+    'ist', 'sind', 'bin', 'bist', 'war', 'waren', 'ich', 'du', 'er', 'sie', 'es', 'wir', 'ihr', 'mit', 'von', 'zu', 'auf',
+    'aus', 'bei', 'nach', 'über', 'auch', 'nur', 'noch', 'schon', 'schön', 'wie', 'was', 'wenn', 'dann', 'hier', 'da',
+    // Italian
+    'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'non',
+    'che', 'chi', 'questo', 'questa', 'quello', 'quella', 'sono', 'sei', 'siamo', 'siete', 'molto', 'piu', 'più', 'cosi',
+    'così', 'qui', 'qua', 'anche', 'solo', 'gia', 'già',
+    // Portuguese
+    'o', 'os', 'as', 'um', 'uma', 'uns', 'umas', 'do', 'da', 'dos', 'das', 'no', 'na', 'nos', 'nas', 'ao', 'aos', 'à', 'às',
+    'em', 'por', 'para', 'com', 'sem', 'nao', 'não', 'que', 'se', 'eu', 'ele', 'ela', 'nos', 'você', 'voces', 'vocês',
+    'muito', 'mais', 'menos', 'bem', 'mal', 'aqui', 'lá', 'então', 'também',
+    // Dutch
+    'het', 'een', 'van', 'en', 'in', 'op', 'met', 'zijn', 'ben', 'bent', 'is', 'was', 'waren', 'ik', 'jij', 'je', 'hij',
+    'zij', 'wij', 'jullie', 'niet', 'ook', 'nog', 'wel', 'maar', 'of', 'als', 'dan', 'om', 'bij', 'uit', 'te', 'naar',
+    // Polish (ASCII-heavy; needs token hits + optional script check)
+    'w', 'z', 'na', 'do', 'od', 'i', 'nie', 'ze', 'jak', 'co', 'to', 'tu', 'tam', 'czy', 'bardzo', 'bardziej', 'jest',
+    'jestem', 'sa', 'są', 'się', 'mnie', 'mną', 'mi', 'ci', 'go', 'je', 'ich', 'nam', 'was',
+  ].map((w) => stripDiacritics(w.toLowerCase())),
+);
+
+/**
+ * Heuristic: message is primarily casual chat in a non-English language (French, Spanish, DE/IT/PT/NL/PL, …).
+ * Used to skip English-only moderation lists that false-positive on harmless banter.
+ */
+function isPrimarilyNonEnglishCasualChat(text) {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 10) return false;
+
+  let extendedScriptChars = 0;
+  let asciiLetters = 0;
+  for (const ch of trimmed) {
+    if (/[A-Za-z]/.test(ch)) asciiLetters++;
+    // Latin Extended, Cyrillic, Greek, CJK, Hangul, etc.
+    if (/[\u00C0-\u024F\u1E00-\u1EFF\u0400-\u04FF\u0500-\u052F\u0370-\u03FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(ch)) {
+      extendedScriptChars++;
+    }
+  }
+  if (extendedScriptChars >= 3) return true;
+
+  const lower = stripDiacritics(trimmed.toLowerCase());
+  // Split on spaces and apostrophes so French c'est, d'un, j'ai → est, un, ai, …
+  const tokens = lower
+    .split(/[\s\u2019']+/)
+    .map((t) => t.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, ''))
+    .filter(Boolean);
+  if (tokens.length < 3) return false;
+
+  let fnHits = 0;
+  for (const w of tokens) {
+    if (MULTILINGUAL_FUNCTION_WORDS.has(w)) fnHits++;
+  }
+  const ratio = fnHits / tokens.length;
+  if (ratio >= 0.28) return true;
+  if (fnHits >= 4 && ratio >= 0.2) return true;
+
+  return false;
+}
+
 // If message contains any safe-context word (game/community talk), don't trigger
 function hasSafeContext(text) {
   if (!text || typeof text !== 'string') return false;
@@ -2501,6 +2582,9 @@ client.once('ready', () => {
   console.log(`CSAM/grooming triggers: ${csamGroomingTriggers.length} lines → hold + TMFIAR + ${CSAM_ACK_EMOJI} ack (${CSAM_GROOMING_WORDS_FILE})`);
   console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
   console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
+  if (MULTILINGUAL_BANTER_BYPASS) {
+    console.log('Multilingual banter: gv-general skips EN-only holds when text looks non-English casual chat (MULTILINGUAL_BANTER_BYPASS=0 to disable)');
+  }
 
   const startOfTodayUtc = () => {
     const d = new Date();
@@ -2855,6 +2939,23 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // Serious slurs (global list) — always enforced before multilingual bypass.
+  if (hasSpamSlur(gvModerationText)) {
+    const userId = message.author.id;
+    const repeated = isRepeatedSlurOffender(userId);
+    recordSlurReply(userId);
+    const videoPayload = getSpamVideoPayload();
+    const gifOrVideoPayload = repeated ? videoPayload : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
+    await deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload);
+    return;
+  }
+
+  // Non–English-primary casual banter: skip English-centric holds (off-topic phrase bag, religion/politics ratio, geo, …).
+  if (MULTILINGUAL_BANTER_BYPASS && isPrimarilyNonEnglishCasualChat(gvModerationText)) {
+    if (DEBUG) console.log('[skip] multilingual casual chat:', gvModerationText.slice(0, 80));
+    return;
+  }
+
   // Harassment/race-bait evasion (e.g. "de lusional ... black plague player ... big fella") → hold channel.
   if (hasHarassmentRaceBaitEvasion(gvModerationText, message.author.id)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
@@ -2933,17 +3034,6 @@ client.on('messageCreate', async (message) => {
         console.error('Soon meme reply failed:', err.message);
       }
     }
-    return;
-  }
-
-  // Slur: first offense = GIF + redirect; repeated/spam (same user within 1h) = video. Delete in gv-general, repost to hold channel.
-  if (hasSpamSlur(gvModerationText)) {
-    const userId = message.author.id;
-    const repeated = isRepeatedSlurOffender(userId);
-    recordSlurReply(userId);
-    const videoPayload = getSpamVideoPayload();
-    const gifOrVideoPayload = repeated ? videoPayload : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
-    await deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload);
     return;
   }
 
