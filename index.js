@@ -1190,6 +1190,12 @@ function multisetOverlapCount(a, b) {
   }
   return overlap;
 }
+// Words that fuzzy-match "delusion" by letter overlap/edit distance but are normal English (e.g. mod talk "deleting messages").
+const DELUSION_FUZZY_EXCLUDE_TOKENS = new Set([
+  'delete', 'deletes', 'deleting', 'deleted', 'deletion',
+  'deliver', 'delivers', 'delivering', 'delivered', 'delivery',
+]);
+
 function looksLikeDelusionVariant(text, strict) {
   const cleaned = stripDiacritics(normalizeForMatch(text).toLowerCase());
   const tokens = cleaned.split(/[^a-z0-9]+/).filter(Boolean);
@@ -1202,6 +1208,7 @@ function looksLikeDelusionVariant(text, strict) {
   for (const tok of tokens) {
     const t = tok.replace(/[^a-z]/g, '');
     if (!t) continue;
+    if (DELUSION_FUZZY_EXCLUDE_TOKENS.has(t)) continue;
     if (targets.some((x) => t.includes(x))) return true;
     if (t.length < 6 || t.length > 18) continue;
     const overlap = multisetOverlapCount(t, 'delusion');
