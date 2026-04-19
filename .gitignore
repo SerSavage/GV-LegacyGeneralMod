@@ -2,5 +2,6 @@ node_modules/
 .env
 *.log
 rss-seen.json
+nexus-mod-watch.json
 welcome-once-ever.json
 spam-watch-strikes.json

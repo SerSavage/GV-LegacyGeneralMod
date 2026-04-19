@@ -162,6 +162,23 @@ const RSS_FEED_2_MAX_POSTS = Math.max(1, Math.min(5, parseInt(process.env.RSS_FE
 const RSS_OFFICIAL_BOOTSTRAP_KEY = '__rss_official_gv_news_bootstrapped__';
 const RSS_2_CHANNEL_HISTORY_LIMIT = Math.min(500, Math.max(40, parseInt(process.env.RSS_2_CHANNEL_HISTORY_LIMIT, 10) || 200));
 const RSS_SEEN_FILE = path.join(process.cwd(), 'rss-seen.json');
+// Nexus Mods API: notify Discord when tracked mod file(s) change (needs NEXUS_API_KEY from a Nexus account with API access).
+const NEXUS_MOD_WATCH_FILE = path.join(process.cwd(), 'nexus-mod-watch.json');
+const NEXUS_API_KEY = process.env.NEXUS_API_KEY || '';
+const NEXUS_MOD_GAME_DOMAIN = process.env.NEXUS_MOD_GAME_DOMAIN || 'mountandblade2bannerlord';
+const NEXUS_MOD_ID_PARSED = parseInt(process.env.NEXUS_MOD_ID || '10668', 10);
+const NEXUS_MOD_ID = Number.isFinite(NEXUS_MOD_ID_PARSED) && NEXUS_MOD_ID_PARSED > 0 ? NEXUS_MOD_ID_PARSED : 0;
+const NEXUS_MOD_NOTIFY_CHANNEL_ID = process.env.NEXUS_MOD_NOTIFY_CHANNEL_ID || '1168572760054841425';
+const NEXUS_MOD_PAGE_URL =
+  process.env.NEXUS_MOD_PAGE_URL || 'https://www.nexusmods.com/mountandblade2bannerlord/mods/10668';
+const NEXUS_MOD_POLL_INTERVAL_MS = Math.max(15 * 60 * 1000, parseInt(process.env.NEXUS_MOD_POLL_INTERVAL_MS, 10) || 60 * 60 * 1000);
+// Nexus file category_id: 1=MAIN, 2=PATCH, 3=OPTION, 4=OLD_VERSION, … (see Nexus public API types)
+const NEXUS_MOD_FILE_CATEGORY_IDS = (process.env.NEXUS_MOD_FILE_CATEGORY_IDS || '1')
+  .split(',')
+  .map((s) => parseInt(s.trim(), 10))
+  .filter((n) => !Number.isNaN(n));
+const NEXUS_APP_NAME = process.env.NEXUS_APP_NAME || 'GV-LegacyGeneralMod';
+const NEXUS_APP_VERSION = process.env.NEXUS_APP_VERSION || '1.0.0';
 const NEW_ARRIVALS_CHANNEL_ID = String(process.env.NEW_ARRIVALS_CHANNEL_ID || '1166775627089719436'); // #new-arrivals: welcome video + user tag (join or first role)
 // Channel IDs for welcome message links (Welcome + server-roles). Override with env if needed.
 const WELCOME_CHANNEL_ID = process.env.WELCOME_CHANNEL_ID || '1166746745582125096';   // #Welcome
@@ -2295,6 +2312,101 @@ function saveRssSeen(seen) {
 }
 const rssSeen = loadRssSeen();
 const rssParser = new Parser({ timeout: 15000 });
+
+function loadNexusModWatchState() {
+  try {
+    if (fs.existsSync(NEXUS_MOD_WATCH_FILE)) {
+      const data = JSON.parse(fs.readFileSync(NEXUS_MOD_WATCH_FILE, 'utf8'));
+      return {
+        initialized: Boolean(data.initialized),
+        fingerprint: typeof data.fingerprint === 'string' ? data.fingerprint : '',
+      };
+    }
+  } catch (e) {
+    if (DEBUG) console.warn('[nexus-mod-watch] state load failed:', e.message);
+  }
+  return { initialized: false, fingerprint: '' };
+}
+function saveNexusModWatchState(state) {
+  try {
+    fs.writeFileSync(NEXUS_MOD_WATCH_FILE, JSON.stringify(state), 'utf8');
+  } catch (e) {
+    if (DEBUG) console.warn('[nexus-mod-watch] state save failed:', e.message);
+  }
+}
+let nexusModWatchState = loadNexusModWatchState();
+
+/** Poll Nexus files API; post to Discord when MAIN (etc.) file fingerprint changes. Requires NEXUS_API_KEY. */
+async function runNexusModFilePoll(client) {
+  if (!NEXUS_API_KEY || !NEXUS_MOD_ID || !NEXUS_MOD_NOTIFY_CHANNEL_ID) return;
+  const categoryAllow = new Set(NEXUS_MOD_FILE_CATEGORY_IDS.length ? NEXUS_MOD_FILE_CATEGORY_IDS : [1]);
+  const url = `https://api.nexusmods.com/v1/games/${encodeURIComponent(NEXUS_MOD_GAME_DOMAIN)}/mods/${NEXUS_MOD_ID}/files.json`;
+  let data;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        apikey: NEXUS_API_KEY,
+        Accept: 'application/json',
+        'Application-Name': NEXUS_APP_NAME,
+        'Application-Version': NEXUS_APP_VERSION,
+      },
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    data = await res.json();
+  } catch (err) {
+    console.error('[nexus-mod-watch] API request failed:', err.message || err);
+    return;
+  }
+  const files = Array.isArray(data?.files) ? data.files : [];
+  const tracked = files.filter((f) => categoryAllow.has(Number(f.category_id)));
+  const fingerprint = tracked
+    .map((f) => `${f.file_id}:${f.uploaded_timestamp}`)
+    .sort()
+    .join('|');
+
+  if (!nexusModWatchState.initialized) {
+    nexusModWatchState = { initialized: true, fingerprint };
+    saveNexusModWatchState(nexusModWatchState);
+    if (DEBUG) console.log('[nexus-mod-watch] bootstrap: stored fingerprint, no Discord post');
+    return;
+  }
+  if (nexusModWatchState.fingerprint === fingerprint) return;
+
+  const channel = await client.channels.fetch(NEXUS_MOD_NOTIFY_CHANNEL_ID).catch(() => null);
+  if (!channel?.isTextBased()) {
+    console.error('[nexus-mod-watch] notify channel missing or not text-based');
+    return;
+  }
+  const lines = tracked
+    .slice(0, 20)
+    .map((f) => {
+      const label = f.name || f.file_name || `file ${f.file_id}`;
+      const ver = f.version || f.mod_version || '?';
+      const cat = f.category_name || String(f.category_id);
+      return `• ${label} (${ver}) — ${cat}`;
+    })
+    .join('\n');
+  const content = [
+    '**Nexus mod — tracked file(s) updated**',
+    NEXUS_MOD_PAGE_URL,
+    tracked.length ? lines : '_API returned no files in selected categories; fingerprint changed anyway._',
+  ].join('\n');
+  try {
+    await channel.send({
+      content: content.slice(0, 2000),
+      allowedMentions: { parse: [] },
+    });
+    nexusModWatchState = { initialized: true, fingerprint };
+    saveNexusModWatchState(nexusModWatchState);
+    if (DEBUG) console.log('[nexus-mod-watch] posted update notification');
+  } catch (err) {
+    console.error('[nexus-mod-watch] Discord send failed:', err.message || err);
+  }
+}
+
 const RSS_FETCH_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'application/rss+xml, application/xml, text/xml, */*',
@@ -2527,6 +2639,20 @@ client.once('ready', () => {
     runOfficialNewsPoll();
     setInterval(runOfficialNewsPoll, RSS_FEED_2_POLL_INTERVAL_MS);
     console.log(`RSS feed 2 (official GV news): every ${Math.round(RSS_FEED_2_POLL_INTERVAL_MS / 3600000)}h, max ${RSS_FEED_2_MAX_POSTS} new item(s) → <#${ANNOUNCEMENT_CHANNEL_ID}>`);
+  }
+
+  // Nexus Mods: poll mod files API; notify when MAIN (default) file set changes. Needs NEXUS_API_KEY (see nexusmods.com API terms).
+  if (NEXUS_API_KEY && NEXUS_MOD_ID && NEXUS_MOD_NOTIFY_CHANNEL_ID) {
+    runNexusModFilePoll(client);
+    setInterval(() => runNexusModFilePoll(client), NEXUS_MOD_POLL_INTERVAL_MS);
+    const cats = NEXUS_MOD_FILE_CATEGORY_IDS.length ? NEXUS_MOD_FILE_CATEGORY_IDS.join(',') : '1';
+    console.log(
+      `Nexus mod watch: game=${NEXUS_MOD_GAME_DOMAIN} mod=${NEXUS_MOD_ID} categories=[${cats}] → <#${NEXUS_MOD_NOTIFY_CHANNEL_ID}> every ${Math.round(
+        NEXUS_MOD_POLL_INTERVAL_MS / 3600000,
+      )}h`,
+    );
+  } else if (DEBUG) {
+    console.log('[nexus-mod-watch] disabled (set NEXUS_API_KEY; optional NEXUS_MOD_ID / NEXUS_MOD_NOTIFY_CHANNEL_ID)');
   }
 });
 
