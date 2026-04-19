@@ -1854,10 +1854,11 @@ function messageHasBlockedMediaId(message) {
 
 // gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect;
 // DM (French) when ≥10 strikes in 5 min OR ≥50 strikes in 1 h; if DM fails, ping in #miaow (French).
-// Also: ≥10 posts in 10 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush).
+// Also: ≥10 posts in 20 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush),
+// but reset the rolling count when another user replies to or reacts to one of those posts.
 const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
 const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
-const SPAM_WATCH_GV_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_GV_VOLUME_WINDOW_MS || String(10 * 60 * 1000), 10));
+const SPAM_WATCH_GV_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_GV_VOLUME_WINDOW_MS || String(20 * 60 * 1000), 10));
 const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '10', 10));
 const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
 const SPAM_WATCH_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_VOLUME_WINDOW_MS || String(60 * 60 * 1000), 10)); // default 1h
@@ -1910,6 +1911,50 @@ function saveSpamWatchState(state) {
   } catch (e) {
     console.error('spam-watch save failed:', e.message);
   }
+}
+
+/** True if the message lives in gv-general (including threads under that channel). */
+function isMessageInGvGeneral(message) {
+  if (!message?.channel) return false;
+  const ch = message.channel;
+  if (typeof ch.isThread === 'function' && ch.isThread()) {
+    return (
+      String(ch.parentId) === String(TRIGGER_CHANNEL_ID)
+      || String(ch.parentId) === String(GV_GENERAL_CHANNEL_ID)
+    );
+  }
+  return (
+    String(message.channelId) === String(TRIGGER_CHANNEL_ID)
+    || String(message.channelId) === String(GV_GENERAL_CHANNEL_ID)
+  );
+}
+
+/**
+ * Reset all rolling spam-watch counters (volume flush + the separate “>10 msgs / 1h” + same-text counts).
+ * The French #miaow prompt uses handleSpamWatchUser (recentMessageTimes / contentCounts), not gvVolumeRecent alone.
+ */
+function resetSpamWatchRollingCounters(reason) {
+  const state = loadSpamWatchState();
+  const hadGv = Array.isArray(state.gvVolumeRecent) && state.gvVolumeRecent.length > 0;
+  const hadRecent = Array.isArray(state.recentMessageTimes) && state.recentMessageTimes.length > 0;
+  const hadContent = state.contentCounts && Object.keys(state.contentCounts).length > 0;
+  const hadStrikes = Array.isArray(state.strikeTimes) && state.strikeTimes.length > 0;
+  if (!hadGv && !hadRecent && !hadContent && !hadStrikes) return false;
+  state.gvVolumeRecent = [];
+  state.recentMessageTimes = [];
+  state.contentCounts = {};
+  state.strikeTimes = [];
+  saveSpamWatchState(state);
+  if (DEBUG) console.log(`[spam-watch] Reset rolling counters (${reason})`);
+  return true;
+}
+
+function isSpamWatchTargetMessage(message) {
+  return Boolean(
+    message
+    && String(message.author?.id) === SPAM_WATCH_USER_ID
+    && isMessageInGvGeneral(message),
+  );
 }
 
 function spamContentKey(norm) {
@@ -2554,6 +2599,18 @@ client.on('messageCreate', async (message) => {
 
   if (message.author.bot) return; // from here on we only react to user messages in gv-general
 
+  // If someone engages with the watched user's gv-general post, forgive rolling spam counters (flush + strike-rate limits).
+  if (message.reference?.messageId) {
+    const repliedTo = await message.fetchReference().catch(() => null);
+    if (
+      repliedTo
+      && isSpamWatchTargetMessage(repliedTo)
+      && String(message.author.id) !== SPAM_WATCH_USER_ID
+    ) {
+      resetSpamWatchRollingCounters(`reply from ${message.author.id}`);
+    }
+  }
+
   if (shouldReplyNoobmars(message)) {
     try {
       await message.author.send(getNoobmarsDmPayload());
@@ -2807,6 +2864,19 @@ client.on('messageCreate', async (message) => {
   // Religion/politics/ideological: random GIF. Delete in gv-general, repost to hold channel.
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
   await deleteInGeneralAndForwardMovedHold(message, randomGif);
+});
+
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (!user || user.bot || String(user.id) === SPAM_WATCH_USER_ID) return;
+  try {
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message?.partial) await reaction.message.fetch();
+    if (isSpamWatchTargetMessage(reaction.message)) {
+      resetSpamWatchRollingCounters(`reaction from ${user.id}`);
+    }
+  } catch (err) {
+    if (DEBUG) console.warn('[spam-watch] reaction reset check failed:', err.message);
+  }
 });
 
 // --- Health check server (for Render: readiness + keep-alive) ---
