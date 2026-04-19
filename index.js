@@ -1876,16 +1876,18 @@ function messageHasBlockedMediaId(message) {
   return BLOCKED_MEDIA_IDS.some((id) => blob.includes(id));
 }
 
-// gv-general only: watch one user — same text 3+ times, or 11+ messages in rolling window, or paste-wall → redirect;
+// gv-general only: watch one user — same text 3+ times, or too many messages in rolling window, or paste-wall → redirect;
 // DM (French) when ≥10 strikes in 5 min OR ≥50 strikes in 1 h; if DM fails, ping in #miaow (French).
-// Also: ≥10 posts in 20 min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush),
-// but reset the rolling count when another user replies to or reacts to one of those posts.
+// Also: ≥N posts in M min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush; defaults 20 / 20 min),
+// reset when another user replies to, @mentions, or reacts to the watched user’s gv-general posts.
 const SPAM_WATCH_USER_ID = String(process.env.SPAM_WATCH_USER_ID || '1409669933801144453');
 const SPAM_WATCH_MIAOW_CHANNEL_ID = String(process.env.SPAM_WATCH_MIAOW_CHANNEL_ID || '1168970870287503412');
 const SPAM_WATCH_GV_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_GV_VOLUME_WINDOW_MS || String(20 * 60 * 1000), 10));
-const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '10', 10));
+const SPAM_WATCH_GV_VOLUME_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_GV_VOLUME_THRESHOLD || '20', 10));
 const SPAM_WATCH_STRIKES_FILE = path.join(process.cwd(), 'spam-watch-strikes.json');
 const SPAM_WATCH_VOLUME_WINDOW_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_VOLUME_WINDOW_MS || String(60 * 60 * 1000), 10)); // default 1h
+/** Same-user message count in gv-general within SPAM_WATCH_VOLUME_WINDOW_MS (default 1h) before redirect — was hardcoded 10. */
+const SPAM_WATCH_VOLUME_MSG_THRESHOLD = Math.max(2, parseInt(process.env.SPAM_WATCH_VOLUME_MSG_THRESHOLD || String(SPAM_WATCH_GV_VOLUME_THRESHOLD), 10));
 const SPAM_WATCH_CONTENT_COUNT_MAX_KEYS = 120;
 const SPAM_WATCH_DM_WINDOW_5MIN_MS = Math.max(60_000, parseInt(process.env.SPAM_WATCH_DM_WINDOW_5MIN_MS || String(5 * 60 * 1000), 10));
 const SPAM_WATCH_DM_WINDOW_1H_MS = Math.max(5 * 60_000, parseInt(process.env.SPAM_WATCH_DM_WINDOW_1H_MS || String(60 * 60 * 1000), 10));
@@ -1954,7 +1956,7 @@ function isMessageInGvGeneral(message) {
 }
 
 /**
- * Reset all rolling spam-watch counters (volume flush + the separate “>10 msgs / 1h” + same-text counts).
+ * Reset all rolling spam-watch counters (volume flush + the separate rolling msg count + same-text counts).
  * The French #miaow prompt uses handleSpamWatchUser (recentMessageTimes / contentCounts), not gvVolumeRecent alone.
  */
 function resetSpamWatchRollingCounters(reason) {
@@ -2103,7 +2105,7 @@ async function handleSpamWatchUser(message) {
   state.contentCounts[key] = (state.contentCounts[key] || 0) + 1;
 
   const sameTextSpam = state.contentCounts[key] >= 3;
-  const volumeSpam = state.recentMessageTimes.length > 10;
+  const volumeSpam = state.recentMessageTimes.length > SPAM_WATCH_VOLUME_MSG_THRESHOLD;
   const wallSpam = looksLikeInMessageRepeatSpam(message.content);
   const isSpam = sameTextSpam || volumeSpam || wallSpam;
 
@@ -2127,7 +2129,7 @@ async function handleSpamWatchUser(message) {
 
   const why = [];
   if (sameTextSpam) why.push('même texte ≥3×');
-  if (volumeSpam) why.push(`>10 messages en ${Math.round(SPAM_WATCH_VOLUME_WINDOW_MS / 60000)} min`);
+  if (volumeSpam) why.push(`>${SPAM_WATCH_VOLUME_MSG_THRESHOLD} messages en ${Math.round(SPAM_WATCH_VOLUME_WINDOW_MS / 60000)} min`);
   if (wallSpam) why.push('copier-coller répété');
 
   const moved = await deleteAndRepostSpamWatchToMiaow(message, why.join(' · '));
@@ -2732,7 +2734,7 @@ client.on('messageCreate', async (message) => {
 
   if (message.author.bot) return; // from here on we only react to user messages in gv-general
 
-  // If someone engages with the watched user's gv-general post, forgive rolling spam counters (flush + strike-rate limits).
+  // If someone engages with the watched user (reply, @mention, or reaction), forgive rolling spam counters.
   if (message.reference?.messageId) {
     const repliedTo = await message.fetchReference().catch(() => null);
     if (
@@ -2742,6 +2744,12 @@ client.on('messageCreate', async (message) => {
     ) {
       resetSpamWatchRollingCounters(`reply from ${message.author.id}`);
     }
+  }
+  if (
+    String(message.author.id) !== SPAM_WATCH_USER_ID
+    && message.mentions?.users?.has(SPAM_WATCH_USER_ID)
+  ) {
+    resetSpamWatchRollingCounters(`mention of <@${SPAM_WATCH_USER_ID}> from ${message.author.id}`);
   }
 
   if (shouldReplyNoobmars(message)) {
