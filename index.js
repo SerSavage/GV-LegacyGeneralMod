@@ -2020,6 +2020,33 @@ function saveSpamWatchState(state) {
   }
 }
 
+/** Single in-memory copy + disk — avoids lost resets when reply + watched-user messages race (read-modify-write). */
+let spamWatchState = loadSpamWatchState();
+
+/** Resolve reply target; fetchReference() alone can fail on uncached / thread edge cases. */
+async function fetchSpamWatchReferencedMessage(message) {
+  if (!message.reference?.messageId) return null;
+  try {
+    let ref = await message.fetchReference().catch(() => null);
+    if (ref?.partial) ref = await ref.fetch().catch(() => ref);
+    if (ref?.author?.id) return ref;
+  } catch (e) {
+    if (DEBUG) console.warn('[spam-watch] fetchReference failed:', e.message);
+  }
+  const chId = message.reference.channelId || message.channelId;
+  if (!chId) return null;
+  try {
+    const ch = await message.client.channels.fetch(chId).catch(() => null);
+    if (!ch?.isTextBased()) return null;
+    let m = await ch.messages.fetch(message.reference.messageId).catch(() => null);
+    if (m?.partial) m = await m.fetch().catch(() => m);
+    return m;
+  } catch (e) {
+    if (DEBUG) console.warn('[spam-watch] manual referenced message fetch failed:', e.message);
+    return null;
+  }
+}
+
 /** True if the message lives in gv-general (including threads under that channel). */
 function isMessageInGvGeneral(message) {
   if (!message?.channel) return false;
@@ -2041,7 +2068,7 @@ function isMessageInGvGeneral(message) {
  * The French #miaow prompt uses handleSpamWatchUser (recentMessageTimes / contentCounts), not gvVolumeRecent alone.
  */
 function resetSpamWatchRollingCounters(reason) {
-  const state = loadSpamWatchState();
+  const state = spamWatchState;
   const hadGv = Array.isArray(state.gvVolumeRecent) && state.gvVolumeRecent.length > 0;
   const hadRecent = Array.isArray(state.recentMessageTimes) && state.recentMessageTimes.length > 0;
   const hadContent = state.contentCounts && Object.keys(state.contentCounts).length > 0;
@@ -2051,7 +2078,7 @@ function resetSpamWatchRollingCounters(reason) {
   state.recentMessageTimes = [];
   state.contentCounts = {};
   state.strikeTimes = [];
-  saveSpamWatchState(state);
+  saveSpamWatchState(spamWatchState);
   if (DEBUG) console.log(`[spam-watch] Reset rolling counters (${reason})`);
   return true;
 }
@@ -2147,17 +2174,17 @@ async function deleteAndRepostSpamWatchToMiaow(message, headerSuffix) {
  */
 async function handleSpamWatchVolumeFlush(message) {
   if (String(message.author.id) !== SPAM_WATCH_USER_ID) return false;
-  const state = loadSpamWatchState();
+  const state = spamWatchState;
   const now = Date.now();
   state.gvVolumeRecent = (state.gvVolumeRecent || []).filter((e) => now - e.ts < SPAM_WATCH_GV_VOLUME_WINDOW_MS);
   state.gvVolumeRecent.push({ id: message.id, ts: now });
   if (state.gvVolumeRecent.length < SPAM_WATCH_GV_VOLUME_THRESHOLD) {
-    saveSpamWatchState(state);
+    saveSpamWatchState(spamWatchState);
     return false;
   }
   state.gvVolumeRecent.sort((a, b) => a.ts - b.ts);
   const batch = state.gvVolumeRecent.splice(0, SPAM_WATCH_GV_VOLUME_THRESHOLD);
-  saveSpamWatchState(state);
+  saveSpamWatchState(spamWatchState);
 
   const channel = message.channel;
   for (const { id } of batch) {
@@ -2177,7 +2204,7 @@ async function handleSpamWatchUser(message) {
   const norm = normalizeSpamContent(message.content) || '(no text)';
 
   const now = Date.now();
-  const state = loadSpamWatchState();
+  const state = spamWatchState;
   state.recentMessageTimes = (state.recentMessageTimes || []).filter((t) => now - t < SPAM_WATCH_VOLUME_WINDOW_MS);
   state.recentMessageTimes.push(now);
 
@@ -2191,7 +2218,7 @@ async function handleSpamWatchUser(message) {
   const isSpam = sameTextSpam || volumeSpam || wallSpam;
 
   if (!isSpam) {
-    saveSpamWatchState(state);
+    saveSpamWatchState(spamWatchState);
     return false;
   }
 
@@ -2206,7 +2233,7 @@ async function handleSpamWatchUser(message) {
   const crossDm1h = before1h < SPAM_WATCH_DM_THRESHOLD_1H && after1h >= SPAM_WATCH_DM_THRESHOLD_1H;
   const shouldTryDm = crossDm5 || crossDm1h;
 
-  saveSpamWatchState(state);
+  saveSpamWatchState(spamWatchState);
 
   const why = [];
   if (sameTextSpam) why.push('même texte ≥3×');
@@ -2819,13 +2846,10 @@ client.on('messageCreate', async (message) => {
   if (message.author.bot) return; // from here on we only react to user messages in gv-general
 
   // If someone engages with the watched user (reply, @mention, or reaction), forgive rolling spam counters.
-  if (message.reference?.messageId) {
-    const repliedTo = await message.fetchReference().catch(() => null);
-    if (
-      repliedTo
-      && isSpamWatchTargetMessage(repliedTo)
-      && String(message.author.id) !== SPAM_WATCH_USER_ID
-    ) {
+  if (String(message.author.id) !== SPAM_WATCH_USER_ID && message.reference?.messageId) {
+    const repliedTo = await fetchSpamWatchReferencedMessage(message);
+    const rid = repliedTo?.author?.id;
+    if (repliedTo && rid && String(rid) === SPAM_WATCH_USER_ID && isMessageInGvGeneral(repliedTo)) {
       resetSpamWatchRollingCounters(`reply from ${message.author.id}`);
     }
   }
