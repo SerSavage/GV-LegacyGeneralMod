@@ -47,17 +47,23 @@ const CSAM_ACK_COLLECTOR_MS = 7 * 24 * 60 * 60 * 1000; // wait up to 7 days for 
 // User whose image/GIF posts in off-topic get moved to gv-general (delete in off-topic, re-post there with no message). Set in Render only — do not commit.
 const OFFTOPIC_TO_GENERAL_USER_ID = process.env.OFFTOPIC_TO_GENERAL_USER_ID || '';
 // If configured authors target Ser/SirSavage (mention or evasion spelling), bot DMs them with NOOBMARS_MENTION_REPLY.
-// One author (NOOBMARS_POOR_YOU_AUTHOR_ID) also triggers on the phrase "Poor you".
+// Same author list can also trigger on "Poor <something>" (e.g. "Poor immigrant swede", "Poor serclown").
 const NOOBMARS_TRIGGER_AUTHOR_IDS = new Set(
   String(process.env.NOOBMARS_TRIGGER_AUTHOR_IDS || '210085436566011904,188328879180480512,405079515765800979,506091599420194817')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
 );
-// This user also triggers Sangnoobs reply when they type "Poor you" (same flow as Savage / target mention).
-const NOOBMARS_POOR_YOU_AUTHOR_ID = String(process.env.NOOBMARS_POOR_YOU_AUTHOR_ID || '506091599420194817');
+// Optional subset override for "Poor <something>" trigger. Empty = all NOOBMARS_TRIGGER_AUTHOR_IDS.
+const NOOBMARS_POOR_TRIGGER_AUTHOR_IDS = new Set(
+  String(process.env.NOOBMARS_POOR_TRIGGER_AUTHOR_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 const NOOBMARS_TRIGGER_TARGET_ID = String(process.env.NOOBMARS_TRIGGER_TARGET_ID || '275603696036085760');
 const NOOBMARS_MENTION_REPLY = process.env.NOOBMARS_MENTION_REPLY || 'Sangnoobs';
+const NOOBMARS_DM_FALLBACK_CHANNEL_ID = String(process.env.NOOBMARS_DM_FALLBACK_CHANNEL_ID || '1485211311070511225');
 const DELUSION_STRICT_USER_ID = String(process.env.DELUSION_STRICT_USER_ID || '188328879180480512');
 function hasSavageNameTrigger(text) {
   if (!text || typeof text !== 'string') return false;
@@ -72,25 +78,30 @@ function hasSavageNameTrigger(text) {
   if (/s[ei]r+s+a?v+a?g+e?/.test(compact)) return true;
   return /s+a+v+a?g+e+/.test(compact);
 }
-function hasPoorYouNoobmarsTrigger(message) {
+function hasPoorNoobmarsTrigger(message) {
   if (!message?.author?.id || !message.content) return false;
-  if (String(message.author.id) !== NOOBMARS_POOR_YOU_AUTHOR_ID) return false;
+  const authorId = String(message.author.id);
+  const poorAllowed =
+    NOOBMARS_POOR_TRIGGER_AUTHOR_IDS.size > 0
+      ? NOOBMARS_POOR_TRIGGER_AUTHOR_IDS.has(authorId)
+      : NOOBMARS_TRIGGER_AUTHOR_IDS.has(authorId);
+  if (!poorAllowed) return false;
   const t = stripDiacritics(message.content.toLowerCase());
-  return /\bpoor\s+you\b/.test(t);
+  return /\bpoor\s+[a-z0-9][a-z0-9'_-]{1,}\b/.test(t);
 }
 
 function shouldReplyNoobmars(message) {
   if (!message || !message.author) return false;
   if (!NOOBMARS_TRIGGER_AUTHOR_IDS.has(String(message.author.id))) return false;
   if (message.mentions?.users?.has(NOOBMARS_TRIGGER_TARGET_ID)) return true;
-  if (hasPoorYouNoobmarsTrigger(message)) return true;
+  if (hasPoorNoobmarsTrigger(message)) return true;
   return hasSavageNameTrigger(message.content);
 }
 function getNoobmarsDmPayload() {
   return { content: NOOBMARS_MENTION_REPLY };
 }
 async function relayNoobmarsToHoldOnDmFailure(message) {
-  const holdChannel = await message.client.channels.fetch(MOVED_BY_BOT_CHANNEL_ID).catch(() => null);
+  const holdChannel = await message.client.channels.fetch(NOOBMARS_DM_FALLBACK_CHANNEL_ID).catch(() => null);
   if (!holdChannel?.isTextBased()) return false;
   const raw = message.content ? String(message.content).trim() : '';
   const movedText = raw ? raw.slice(0, 1200) + (raw.length > 1200 ? '…' : '') : '(no text)';
