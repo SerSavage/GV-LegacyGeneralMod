@@ -1300,6 +1300,9 @@ const GEOPOLITICAL_HARD_SUBSTRINGS = [
   'geopolitical', 'embargo', 'embargoes',
   'intervention', 'annexation', 'insurgency',
   'war crime', 'war crimes',
+  // Middle East / current-conflict phrasing: hard redirect (independent of ratio thresholds)
+  'middle east', 'middle-east',
+  'iran', 'iraq', 'israel', 'gaza', 'palestine',
 ].map(s => s.toLowerCase());
 
 /** UN / U.N. without matching Spanish article "un" alone */
@@ -1308,6 +1311,9 @@ const GEOPOLITICAL_UN_RE = /\b(?:the\s+)?u\.?\s*n\.?\b|\bunited\s+nations\b|\bun
 function hasGeopoliticalHardRedirect(text) {
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
+  // Directed conflict framing around Middle East should always route away from gv-general.
+  if (/\bfight(?:ing)?\s+(?:in|for|over)\s+the\s+middle[\s-]+east\b/i.test(lower)) return true;
+  if (/\bwar\s+(?:in|for|over)\s+the\s+middle[\s-]+east\b/i.test(lower)) return true;
   for (const s of GEOPOLITICAL_HARD_SUBSTRINGS) {
     const term = s.trim();
     if (!term) continue;
