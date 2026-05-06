@@ -38,6 +38,7 @@ const TEMP_VOICE_CATEGORY_ID = String(process.env.TEMP_VOICE_CATEGORY_ID || '116
 const TEMP_VOICE_TRIGGER_CHANNEL_ID = String(process.env.TEMP_VOICE_TRIGGER_CHANNEL_ID || '');
 const TEMP_VOICE_NAME_TEMPLATE = process.env.TEMP_VOICE_NAME_TEMPLATE || '{displayName}\'s channel';
 const TEMP_VOICE_COMMAND_GUILD_ID = String(process.env.TEMP_VOICE_COMMAND_GUILD_ID || '');
+const TEMP_VOICE_OWNERS_FILE = path.join(process.cwd(), 'temp-voice-owners.json');
 // Message to send when a word is detected
 // #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
@@ -2624,7 +2625,31 @@ const client = new Client({
   }),
 });
 
-const tempVoiceOwners = new Map(); // voiceChannelId -> ownerUserId
+function loadTempVoiceOwners() {
+  try {
+    if (!fs.existsSync(TEMP_VOICE_OWNERS_FILE)) return new Map();
+    const raw = JSON.parse(fs.readFileSync(TEMP_VOICE_OWNERS_FILE, 'utf8'));
+    if (!raw || typeof raw !== 'object') return new Map();
+    return new Map(
+      Object.entries(raw)
+        .filter(([channelId, ownerId]) => Boolean(channelId) && Boolean(ownerId)),
+    );
+  } catch (err) {
+    console.warn('Temp voice owners load failed:', err.message || err);
+    return new Map();
+  }
+}
+
+function saveTempVoiceOwners() {
+  try {
+    const obj = Object.fromEntries(tempVoiceOwners.entries());
+    fs.writeFileSync(TEMP_VOICE_OWNERS_FILE, JSON.stringify(obj), 'utf8');
+  } catch (err) {
+    console.warn('Temp voice owners save failed:', err.message || err);
+  }
+}
+
+const tempVoiceOwners = loadTempVoiceOwners(); // voiceChannelId -> ownerUserId
 const TEMP_VOICE_OWNER_PERMS = {
   ManageChannels: true,
   ManageRoles: true,
@@ -2669,6 +2694,30 @@ function canClaimTempVoiceOwnership(guild, channel, ownerId) {
   const ownerMember = guild.members.cache.get(ownerId);
   if (!ownerMember) return true; // owner left guild or not cached
   return ownerMember.voice?.channelId !== channel.id;
+}
+
+async function reconcileTempVoiceOwners(clientInstance) {
+  if (tempVoiceOwners.size === 0) return;
+  let changed = false;
+  for (const [channelId] of tempVoiceOwners.entries()) {
+    try {
+      const ch = await clientInstance.channels.fetch(channelId).catch(() => null);
+      if (!ch || ch.type !== ChannelType.GuildVoice) {
+        tempVoiceOwners.delete(channelId);
+        changed = true;
+        continue;
+      }
+      const humans = ch.members.filter((m) => !m.user.bot).size;
+      if (humans === 0) {
+        await ch.delete('Temp voice cleanup after restart');
+        tempVoiceOwners.delete(channelId);
+        changed = true;
+      }
+    } catch (err) {
+      console.warn(`Temp voice reconcile failed for ${channelId}:`, err.message || err);
+    }
+  }
+  if (changed) saveTempVoiceOwners();
 }
 
 function tempVoiceHelpText(prefix = '!vc') {
@@ -2797,6 +2846,7 @@ async function executeTempVoiceCommand(ctx) {
     const currentOwnerId = tempVoiceOwners.get(voiceChannel.id);
     if (!currentOwnerId) {
       tempVoiceOwners.set(voiceChannel.id, authorId);
+      saveTempVoiceOwners();
       await applyTempVoiceOwner(voiceChannel, authorId);
       await reply('Ownership claimed.');
       return true;
@@ -2813,6 +2863,7 @@ async function executeTempVoiceCommand(ctx) {
       await applyTempVoiceOwner(voiceChannel, authorId);
       await clearTempVoiceOwner(voiceChannel, currentOwnerId);
       tempVoiceOwners.set(voiceChannel.id, authorId);
+      saveTempVoiceOwners();
       await reply(`Ownership claimed by ${authorMention}.`);
     } catch (err) {
       console.error('Temp voice claim failed:', err.message || err);
@@ -2843,6 +2894,7 @@ async function executeTempVoiceCommand(ctx) {
     await applyTempVoiceOwner(voiceChannel, targetMember.id);
     await clearTempVoiceOwner(voiceChannel, authorId);
     tempVoiceOwners.set(voiceChannel.id, targetMember.id);
+    saveTempVoiceOwners();
     await reply(`Ownership transferred to ${targetMember.toString()}.`);
   } catch (err) {
     console.error('Temp voice ownership transfer failed:', err.message || err);
@@ -3048,6 +3100,12 @@ client.once('ready', () => {
   } else {
     console.log(`Temp voice enabled: trigger=${TEMP_VOICE_TRIGGER_CHANNEL_ID}, category=${TEMP_VOICE_CATEGORY_ID}`);
   }
+  if (tempVoiceOwners.size > 0) {
+    console.log(`Temp voice owners restored: ${tempVoiceOwners.size}`);
+  }
+  reconcileTempVoiceOwners(client).catch((err) => {
+    console.warn('Temp voice reconcile run failed:', err.message || err);
+  });
 
   const vcSlashCommand = new SlashCommandBuilder()
     .setName('vc')
@@ -3135,6 +3193,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         reason: `Temp voice requested by ${member.user.tag}`,
       });
       tempVoiceOwners.set(created.id, member.id);
+      saveTempVoiceOwners();
       await applyTempVoiceOwner(created, member.id);
       await member.voice.setChannel(created, 'Move user to newly created temp voice');
       if (DEBUG) console.log(`[temp-voice] Created ${created.id} for ${member.user.tag}`);
@@ -3148,6 +3207,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     if (humansLeft === 0) {
       try {
         tempVoiceOwners.delete(leftChannel.id);
+        saveTempVoiceOwners();
         await leftChannel.delete('Temp voice empty');
         if (DEBUG) console.log(`[temp-voice] Deleted empty channel ${leftChannel.id}`);
       } catch (err) {
