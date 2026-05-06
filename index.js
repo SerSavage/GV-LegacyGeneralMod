@@ -2787,6 +2787,25 @@ function tempVoiceHelpText(prefix = '!vc') {
   ].join('\n');
 }
 
+async function safeInteractionReply(interaction, text) {
+  try {
+    if (interaction.replied || interaction.deferred) {
+      return await interaction.followUp({ content: text, flags: 64 });
+    }
+    return await interaction.reply({ content: text, flags: 64 });
+  } catch (err) {
+    const msg = String(err?.message || '');
+    if (msg.includes('Interaction has already been acknowledged.')) {
+      try {
+        return await interaction.followUp({ content: text, flags: 64 });
+      } catch {
+        return null;
+      }
+    }
+    throw err;
+  }
+}
+
 async function executeTempVoiceCommand(ctx) {
   const { guild, member, authorId, authorTag, authorMention, sub, rawName, limitValue, targetMember, reply } = ctx;
   const freshMember = await guild.members.fetch(authorId).catch(() => member || null);
@@ -3281,10 +3300,7 @@ client.on('interactionCreate', async (interaction) => {
     rawName,
     limitValue,
     targetMember,
-    reply: async (text) => {
-      if (interaction.replied || interaction.deferred) return interaction.followUp({ content: text, ephemeral: true });
-      return interaction.reply({ content: text, ephemeral: true });
-    },
+    reply: async (text) => safeInteractionReply(interaction, text),
   });
 });
 
@@ -3363,6 +3379,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     oldState.channelId !== newState.channelId
   ) {
     try {
+      const currentMember = await newState.guild.members.fetch(member.id).catch(() => member);
+      if (currentMember?.voice?.channelId !== TEMP_VOICE_TRIGGER_CHANNEL_ID) return;
       const now = Date.now();
       const lockTs = tempVoiceCreateLockByUser.get(member.id) || 0;
       if (now - lockTs < 5000) {
@@ -3389,6 +3407,16 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       tempVoiceOwners.set(created.id, member.id);
       saveTempVoiceOwners();
       await applyTempVoiceOwner(created, member.id);
+      const currentMemberAfterCreate = await newState.guild.members.fetch(member.id).catch(() => member);
+      if (currentMemberAfterCreate?.voice?.channelId !== TEMP_VOICE_TRIGGER_CHANNEL_ID) {
+        if (created.members.filter((m) => !m.user.bot).size === 0) {
+          await created.delete('Duplicate create race cleanup');
+          tempVoiceOwners.delete(created.id);
+          saveTempVoiceOwners();
+        }
+        tempVoiceCreateLockByUser.delete(member.id);
+        return;
+      }
       await member.voice.setChannel(created, 'Move user to newly created temp voice');
       if (DEBUG) console.log(`[temp-voice] Created ${created.id} for ${member.user.tag}`);
       tempVoiceCreateLockByUser.delete(member.id);
