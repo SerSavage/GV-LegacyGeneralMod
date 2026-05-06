@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -3163,11 +3163,14 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton() && interaction.customId.startsWith('tvreq:')) {
     const parts = interaction.customId.split(':');
     const action = parts[1];
-    const channelId = parts[2];
-    const requesterId = parts[3];
+    const guildId = parts[2];
+    const channelId = parts[3];
+    const requesterId = parts[4];
+    const reqGuild = await client.guilds.fetch(guildId).catch(() => null);
+    const guildRef = interaction.guild || reqGuild;
     const key = `${channelId}:${requesterId}`;
-    const reqChannel = await interaction.guild?.channels.fetch(channelId).catch(() => null);
-    if (!interaction.inGuild() || !reqChannel || reqChannel.type !== ChannelType.GuildVoice) {
+    const reqChannel = await guildRef?.channels.fetch(channelId).catch(() => null);
+    if (!guildRef || !reqChannel || reqChannel.type !== ChannelType.GuildVoice) {
       await interaction.reply({ content: 'Request is no longer valid.', ephemeral: true });
       return;
     }
@@ -3185,11 +3188,14 @@ client.on('interactionCreate', async (interaction) => {
           { Connect: true, ViewChannel: true },
           { reason: `Temp voice join approved by ${interaction.user.tag}` },
         );
-        const requester = await interaction.guild.members.fetch(requesterId).catch(() => null);
+        const requester = await guildRef.members.fetch(requesterId).catch(() => null);
         if (requester?.voice) {
           await requester.voice.setChannel(reqChannel, 'Approved join request for locked temp voice');
         }
-        try { await interaction.guild.members.send(requesterId, `Your request to join **${reqChannel.name}** was approved.`); } catch {}
+        if (requester?.voice?.channel?.isTextBased()) {
+          await requester.voice.channel.send({ content: `${requester.toString()} request approved. You may join **${reqChannel.name}** now.` }).catch(() => {});
+        }
+        try { await guildRef.members.send(requesterId, `Your request to join **${reqChannel.name}** was approved.`); } catch {}
         await interaction.reply({ content: 'Join request approved.', ephemeral: true });
       } catch (err) {
         console.error('Temp voice request approve failed:', err.message || err);
@@ -3199,7 +3205,11 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (action === 'deny') {
-      try { await interaction.guild.members.send(requesterId, 'Access Denied.'); } catch {}
+      const requester = await guildRef.members.fetch(requesterId).catch(() => null);
+      if (requester?.voice?.channel?.isTextBased()) {
+        await requester.voice.channel.send({ content: `${requester.toString()} Access Denied.` }).catch(() => {});
+      }
+      try { await guildRef.members.send(requesterId, 'Access Denied.'); } catch {}
       await interaction.reply({ content: 'Join request denied.', ephemeral: true });
       return;
     }
@@ -3259,7 +3269,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     const ownerId = resolveTempVoiceOwnerId(joinedChannel);
     const isOwner = ownerId === member.id;
     const isPermitted = isMemberExplicitlyPermitted(joinedChannel, member.id);
-    if (!isOwner && !isPermitted) {
+    const canManageChannel = joinedChannel.permissionsFor(member)?.has(PermissionFlagsBits.ManageChannels);
+    if (!isOwner && !isPermitted && !canManageChannel) {
       const key = `${joinedChannel.id}:${member.id}`;
       const now = Date.now();
       const lastTs = tempVoiceJoinRequests.get(key) || 0;
@@ -3284,8 +3295,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         const ownerMember = await newState.guild.members.fetch(ownerId).catch(() => null);
         if (ownerMember) {
           const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`tvreq:approve:${joinedChannel.id}:${member.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId(`tvreq:deny:${joinedChannel.id}:${member.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`tvreq:approve:${newState.guild.id}:${joinedChannel.id}:${member.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`tvreq:deny:${newState.guild.id}:${joinedChannel.id}:${member.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
           );
           try {
             await ownerMember.send({
