@@ -2715,6 +2715,11 @@ function shouldPauseTempVoiceActions() {
   return Date.now() - tempVoiceProcessStartedAt < TEMP_VOICE_STARTUP_GRACE_MS;
 }
 
+function getVoiceStateOccupancy(guild, channelId) {
+  if (!guild || !channelId) return 0;
+  return guild.voiceStates.cache.filter((vs) => vs.channelId === channelId).size;
+}
+
 async function applyTempVoiceOwner(channel, userId) {
   await channel.permissionOverwrites.edit(userId, TEMP_VOICE_OWNER_PERMS, { reason: 'Temp voice owner permissions' });
 }
@@ -2754,8 +2759,8 @@ async function reconcileTempVoiceOwners(clientInstance) {
         changed = true;
         continue;
       }
-      const humans = ch.members.filter((m) => !m.user.bot).size;
-      if (humans === 0) {
+      const occupants = getVoiceStateOccupancy(ch.guild, ch.id);
+      if (occupants === 0) {
         await ch.delete('Temp voice cleanup after restart');
         tempVoiceOwners.delete(channelId);
         changed = true;
@@ -3239,8 +3244,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 
   if (isTrackedTempVoiceChannel(leftChannel)) {
-    const humansLeft = leftChannel.members.filter((m) => !m.user.bot).size;
-    if (humansLeft === 0) {
+    const occupantsLeft = getVoiceStateOccupancy(newState.guild, leftChannel.id);
+    if (occupantsLeft === 0) {
       try {
         tempVoiceOwners.delete(leftChannel.id);
         saveTempVoiceOwners();
