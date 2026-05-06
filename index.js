@@ -2652,6 +2652,7 @@ function saveTempVoiceOwners() {
 
 const tempVoiceOwners = loadTempVoiceOwners(); // voiceChannelId -> ownerUserId
 const tempVoiceJoinRequests = new Map(); // key channelId:userId -> timestamp
+const tempVoiceCreateLockByUser = new Map(); // userId -> timestamp
 const TEMP_VOICE_OWNER_PERMS = {
   Connect: true,
   ViewChannel: true,
@@ -2691,6 +2692,21 @@ function findOwnedTempVoiceChannel(guild, userId) {
     if (ownerId !== userId) continue;
     const ch = guild.channels.cache.get(channelId);
     if (ch && ch.type === ChannelType.GuildVoice) return ch;
+  }
+  return null;
+}
+
+function findOwnedTempVoiceChannelDeep(guild, userId) {
+  const fromMap = findOwnedTempVoiceChannel(guild, userId);
+  if (fromMap) return fromMap;
+  const chans = guild.channels?.cache?.values?.();
+  if (!chans) return null;
+  for (const ch of chans) {
+    if (!ch || ch.type !== ChannelType.GuildVoice) continue;
+    if (ch.id === TEMP_VOICE_TRIGGER_CHANNEL_ID) continue;
+    if (String(ch.parentId || '') !== TEMP_VOICE_CATEGORY_ID) continue;
+    const ownerId = resolveTempVoiceOwnerId(ch);
+    if (ownerId === userId) return ch;
   }
   return null;
 }
@@ -3347,9 +3363,21 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     oldState.channelId !== newState.channelId
   ) {
     try {
-      const existingOwned = findOwnedTempVoiceChannel(newState.guild, member.id);
+      const now = Date.now();
+      const lockTs = tempVoiceCreateLockByUser.get(member.id) || 0;
+      if (now - lockTs < 5000) {
+        const existingLocked = findOwnedTempVoiceChannelDeep(newState.guild, member.id);
+        if (existingLocked) {
+          await member.voice.setChannel(existingLocked, 'Move user to existing temp voice (debounced)');
+        }
+        return;
+      }
+      tempVoiceCreateLockByUser.set(member.id, now);
+
+      const existingOwned = findOwnedTempVoiceChannelDeep(newState.guild, member.id);
       if (existingOwned) {
         await member.voice.setChannel(existingOwned, 'Move user to existing owned temp voice');
+        tempVoiceCreateLockByUser.delete(member.id);
         return;
       }
       const created = await newState.guild.channels.create({
@@ -3363,8 +3391,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       await applyTempVoiceOwner(created, member.id);
       await member.voice.setChannel(created, 'Move user to newly created temp voice');
       if (DEBUG) console.log(`[temp-voice] Created ${created.id} for ${member.user.tag}`);
+      tempVoiceCreateLockByUser.delete(member.id);
     } catch (err) {
       console.error('Temp voice create/move failed:', err.message || err);
+      tempVoiceCreateLockByUser.delete(member.id);
     }
   }
 
@@ -3377,6 +3407,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         await leftChannel.delete('Temp voice empty');
         if (DEBUG) console.log(`[temp-voice] Deleted empty channel ${leftChannel.id}`);
       } catch (err) {
+        if ((err.message || '').includes('Unknown Channel')) return;
         console.error('Temp voice delete failed:', err.message || err);
       }
     }
