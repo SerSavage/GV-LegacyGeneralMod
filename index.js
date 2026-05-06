@@ -2794,7 +2794,13 @@ async function executeTempVoiceCommand(ctx) {
       await reply('You must be inside your temp voice channel to use this command.');
       return true;
     }
-    const currentOwnerId = resolveTempVoiceOwnerId(voiceChannel);
+    let currentOwnerId = resolveTempVoiceOwnerId(voiceChannel);
+    const hasOwnerLikePerm = voiceChannel.permissionOverwrites.cache.get(authorId)?.allow?.has('ManageChannels');
+    if (!currentOwnerId && hasOwnerLikePerm) {
+      tempVoiceOwners.set(voiceChannel.id, authorId);
+      saveTempVoiceOwners();
+      currentOwnerId = authorId;
+    }
     if (currentOwnerId !== authorId) {
       await reply('Only the current channel owner can use this command.');
       return true;
@@ -2836,14 +2842,15 @@ async function executeTempVoiceCommand(ctx) {
   if (sub === 'lock' || sub === 'unlock') {
     const lock = sub === 'lock';
     try {
-      const ownerId = resolveTempVoiceOwnerId(voiceChannel) || authorId;
+      tempVoiceOwners.set(voiceChannel.id, authorId);
+      saveTempVoiceOwners();
       await voiceChannel.permissionOverwrites.edit(
         guild.roles.everyone.id,
         { Connect: lock ? false : null },
         { reason: `Temp voice ${sub} by ${authorTag}` },
       );
       await voiceChannel.permissionOverwrites.edit(
-        ownerId,
+        authorId,
         TEMP_VOICE_OWNER_PERMS,
         { reason: `Temp voice owner keep-access on ${sub}` },
       );
@@ -3278,7 +3285,15 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     isTrackedTempVoiceChannel(joinedChannel) &&
     isTempVoiceLocked(joinedChannel, newState.guild)
   ) {
-    const ownerId = resolveTempVoiceOwnerId(joinedChannel) || tempVoiceOwners.get(joinedChannel.id) || null;
+    let ownerId = resolveTempVoiceOwnerId(joinedChannel) || tempVoiceOwners.get(joinedChannel.id) || null;
+    if (!ownerId) {
+      const ownerLike = joinedChannel.members.find((m) => joinedChannel.permissionOverwrites.cache.get(m.id)?.allow?.has('ManageChannels'));
+      if (ownerLike) {
+        ownerId = ownerLike.id;
+        tempVoiceOwners.set(joinedChannel.id, ownerId);
+        saveTempVoiceOwners();
+      }
+    }
     if (!ownerId) return;
     const isOwner = ownerId === member.id;
     const isPermitted = isMemberExplicitlyPermitted(joinedChannel, member.id);
