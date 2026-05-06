@@ -39,6 +39,7 @@ const TEMP_VOICE_TRIGGER_CHANNEL_ID = String(process.env.TEMP_VOICE_TRIGGER_CHAN
 const TEMP_VOICE_NAME_TEMPLATE = process.env.TEMP_VOICE_NAME_TEMPLATE || '{displayName}\'s channel';
 const TEMP_VOICE_COMMAND_GUILD_ID = String(process.env.TEMP_VOICE_COMMAND_GUILD_ID || '');
 const TEMP_VOICE_WAITING_CHANNEL_ID = String(process.env.TEMP_VOICE_WAITING_CHANNEL_ID || '');
+const TEMP_VOICE_STARTUP_GRACE_MS = Math.max(0, parseInt(process.env.TEMP_VOICE_STARTUP_GRACE_MS, 10) || 90000);
 const TEMP_VOICE_OWNERS_FILE = path.join(process.cwd(), 'temp-voice-owners.json');
 // Message to send when a word is detected
 // #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
@@ -2653,6 +2654,7 @@ function saveTempVoiceOwners() {
 const tempVoiceOwners = loadTempVoiceOwners(); // voiceChannelId -> ownerUserId
 const tempVoiceJoinRequests = new Map(); // key channelId:userId -> timestamp
 const tempVoiceCreateLockByUser = new Map(); // userId -> timestamp
+const tempVoiceProcessStartedAt = Date.now();
 const TEMP_VOICE_OWNER_PERMS = {
   Connect: true,
   ViewChannel: true,
@@ -2709,6 +2711,10 @@ function findOwnedTempVoiceChannelDeep(guild, userId) {
     if (ownerId === userId) return ch;
   }
   return null;
+}
+
+function shouldPauseTempVoiceActions() {
+  return Date.now() - tempVoiceProcessStartedAt < TEMP_VOICE_STARTUP_GRACE_MS;
 }
 
 function isTempVoiceLocked(channel, guild) {
@@ -3169,6 +3175,9 @@ client.once('ready', () => {
   if (tempVoiceOwners.size > 0) {
     console.log(`Temp voice owners restored: ${tempVoiceOwners.size}`);
   }
+  if (TEMP_VOICE_STARTUP_GRACE_MS > 0) {
+    console.log(`Temp voice startup grace: ${TEMP_VOICE_STARTUP_GRACE_MS}ms (prevents deploy-overlap duplicate handling).`);
+  }
   reconcileTempVoiceOwners(client).catch((err) => {
     console.warn('Temp voice reconcile run failed:', err.message || err);
   });
@@ -3210,6 +3219,7 @@ client.once('ready', () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  if (shouldPauseTempVoiceActions()) return;
   if (interaction.isButton() && interaction.customId.startsWith('tvreq:')) {
     const parts = interaction.customId.split(':');
     const action = parts[1];
@@ -3305,6 +3315,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
+  if (shouldPauseTempVoiceActions()) return;
   const member = newState.member || oldState.member;
   if (!member || member.user.bot) return;
 
