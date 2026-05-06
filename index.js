@@ -3174,6 +3174,10 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ content: 'Request is no longer valid.', ephemeral: true });
       return;
     }
+    if (interaction.channelId !== channelId) {
+      await interaction.reply({ content: 'Approve/Deny must be used from that temp voice channel chat.', ephemeral: true });
+      return;
+    }
     const ownerId = resolveTempVoiceOwnerId(reqChannel);
     if (ownerId !== interaction.user.id) {
       await interaction.reply({ content: 'Only the current channel owner can approve/deny requests.', ephemeral: true });
@@ -3266,7 +3270,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     isTrackedTempVoiceChannel(joinedChannel) &&
     isTempVoiceLocked(joinedChannel, newState.guild)
   ) {
-    const ownerId = resolveTempVoiceOwnerId(joinedChannel);
+    const ownerId = resolveTempVoiceOwnerId(joinedChannel) || tempVoiceOwners.get(joinedChannel.id) || null;
+    if (!ownerId) return;
     const isOwner = ownerId === member.id;
     const isPermitted = isMemberExplicitlyPermitted(joinedChannel, member.id);
     const canManageChannel = joinedChannel.permissionsFor(member)?.has(PermissionFlagsBits.ManageChannels);
@@ -3292,19 +3297,19 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       }
 
       if (ownerId && now - lastTs > 10000) {
-        const ownerMember = await newState.guild.members.fetch(ownerId).catch(() => null);
-        if (ownerMember) {
+        const ownerMember = joinedChannel.members.get(ownerId) || await newState.guild.members.fetch(ownerId).catch(() => null);
+        if (ownerMember && joinedChannel.isTextBased()) {
           const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`tvreq:approve:${newState.guild.id}:${joinedChannel.id}:${member.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId(`tvreq:deny:${newState.guild.id}:${joinedChannel.id}:${member.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
           );
           try {
-            await ownerMember.send({
-              content: `${member.user.tag} wants to join your locked channel **${joinedChannel.name}**.`,
+            await joinedChannel.send({
+              content: `${ownerMember.toString()} ${member.toString()} wants to join locked channel **${joinedChannel.name}**.`,
               components: [row],
             });
           } catch (err) {
-            console.warn('Could not DM temp voice owner for join request:', err.message || err);
+            console.warn('Could not post join request in temp voice chat:', err.message || err);
           }
         }
       }
