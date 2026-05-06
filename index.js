@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -38,7 +38,6 @@ const TEMP_VOICE_CATEGORY_ID = String(process.env.TEMP_VOICE_CATEGORY_ID || '116
 const TEMP_VOICE_TRIGGER_CHANNEL_ID = String(process.env.TEMP_VOICE_TRIGGER_CHANNEL_ID || '');
 const TEMP_VOICE_NAME_TEMPLATE = process.env.TEMP_VOICE_NAME_TEMPLATE || '{displayName}\'s channel';
 const TEMP_VOICE_COMMAND_GUILD_ID = String(process.env.TEMP_VOICE_COMMAND_GUILD_ID || '');
-const TEMP_VOICE_WAITING_CHANNEL_ID = String(process.env.TEMP_VOICE_WAITING_CHANNEL_ID || '');
 const TEMP_VOICE_STARTUP_GRACE_MS = Math.max(0, parseInt(process.env.TEMP_VOICE_STARTUP_GRACE_MS, 10) || 90000);
 const TEMP_VOICE_OWNERS_FILE = path.join(process.cwd(), 'temp-voice-owners.json');
 // Message to send when a word is detected
@@ -2652,7 +2651,6 @@ function saveTempVoiceOwners() {
 }
 
 const tempVoiceOwners = loadTempVoiceOwners(); // voiceChannelId -> ownerUserId
-const tempVoiceJoinRequests = new Map(); // key channelId:userId -> timestamp
 const tempVoiceCreateLockByUser = new Map(); // userId -> timestamp
 const tempVoiceProcessStartedAt = Date.now();
 const TEMP_VOICE_OWNER_PERMS = {
@@ -2717,17 +2715,6 @@ function shouldPauseTempVoiceActions() {
   return Date.now() - tempVoiceProcessStartedAt < TEMP_VOICE_STARTUP_GRACE_MS;
 }
 
-function isTempVoiceLocked(channel, guild) {
-  if (!channel || !guild) return false;
-  const everyoneOw = channel.permissionOverwrites.cache.get(guild.roles.everyone.id);
-  return Boolean(everyoneOw?.deny?.has('Connect'));
-}
-
-function isMemberExplicitlyPermitted(channel, memberId) {
-  const ow = channel?.permissionOverwrites?.cache?.get(memberId);
-  return Boolean(ow?.allow?.has('Connect'));
-}
-
 async function applyTempVoiceOwner(channel, userId) {
   await channel.permissionOverwrites.edit(userId, TEMP_VOICE_OWNER_PERMS, { reason: 'Temp voice owner permissions' });
 }
@@ -2787,8 +2774,6 @@ function tempVoiceHelpText(prefix = '!vc') {
     `\`${prefix} transfer @user\` - transfer ownership of your current temp voice channel.`,
     `\`${prefix} rename <new name>\` - rename your current temp voice channel.`,
     `\`${prefix} limit <number>\` - set user limit (0-99, where 0 means unlimited).`,
-    `\`${prefix} lock\` / \`${prefix} unlock\` - close or open your temp channel for @everyone.`,
-    `\`${prefix} permit @user\` / \`${prefix} reject @user\` - allow or deny a specific member.`,
     `\`${prefix} claim\` - become owner if current owner is gone.`,
   ].join('\n');
 }
@@ -2819,11 +2804,7 @@ async function executeTempVoiceCommand(ctx) {
   const requiresOwnedChannel = sub === 'transfer'
     || sub === 'owner'
     || sub === 'rename'
-    || sub === 'limit'
-    || sub === 'lock'
-    || sub === 'unlock'
-    || sub === 'permit'
-    || sub === 'reject';
+    || sub === 'limit';
 
   if (sub === 'help') {
     await reply(tempVoiceHelpText('/vc'));
@@ -2876,57 +2857,6 @@ async function executeTempVoiceCommand(ctx) {
     } catch (err) {
       console.error('Temp voice limit update failed:', err.message || err);
       await reply('Could not update user limit. Ensure the bot has Manage Channels permission.');
-    }
-    return true;
-  }
-
-  if (sub === 'lock' || sub === 'unlock') {
-    const lock = sub === 'lock';
-    try {
-      tempVoiceOwners.set(voiceChannel.id, authorId);
-      saveTempVoiceOwners();
-      await voiceChannel.permissionOverwrites.edit(
-        guild.roles.everyone.id,
-        { Connect: lock ? false : null },
-        { reason: `Temp voice ${sub} by ${authorTag}` },
-      );
-      await voiceChannel.permissionOverwrites.edit(
-        authorId,
-        TEMP_VOICE_OWNER_PERMS,
-        { reason: `Temp voice owner keep-access on ${sub}` },
-      );
-      await reply(lock ? 'Channel locked.' : 'Channel unlocked.');
-    } catch (err) {
-      console.error(`Temp voice ${sub} failed:`, err.message || err);
-      await reply('Could not update lock state. Ensure the bot has Manage Channels permission.');
-    }
-    return true;
-  }
-
-  if (sub === 'permit' || sub === 'reject') {
-    if (!targetMember) {
-      await reply(`Mention/select a user: \`/vc ${sub} user:@member\`.`);
-      return true;
-    }
-    if (targetMember.id === authorId) {
-      await reply('This command is only for other users.');
-      return true;
-    }
-    try {
-      await voiceChannel.permissionOverwrites.edit(
-        targetMember.id,
-        { Connect: sub === 'permit', ViewChannel: sub === 'permit' ? true : null },
-        { reason: `Temp voice ${sub} by ${authorTag}` },
-      );
-      await reply(sub === 'permit'
-        ? `${targetMember.toString()} is now permitted to join.`
-        : `${targetMember.toString()} is now rejected from joining.`);
-      if (sub === 'reject' && targetMember.voice?.channelId === voiceChannel.id) {
-        await targetMember.voice.disconnect('Rejected from temp voice channel');
-      }
-    } catch (err) {
-      console.error(`Temp voice ${sub} failed:`, err.message || err);
-      await reply('Could not update user permissions. Ensure the bot has Manage Channels and Move Members permissions.');
     }
     return true;
   }
@@ -3187,18 +3117,12 @@ client.once('ready', () => {
     .setDescription('Manage your temporary voice channel')
     .addSubcommand((s) => s.setName('help').setDescription('Show temp voice help'))
     .addSubcommand((s) => s.setName('claim').setDescription('Claim ownership if owner is gone'))
-    .addSubcommand((s) => s.setName('lock').setDescription('Lock your temp voice channel'))
-    .addSubcommand((s) => s.setName('unlock').setDescription('Unlock your temp voice channel'))
     .addSubcommand((s) => s.setName('rename').setDescription('Rename your temp voice channel')
       .addStringOption((o) => o.setName('name').setDescription('New voice channel name').setRequired(true)))
     .addSubcommand((s) => s.setName('limit').setDescription('Set user limit (0-99)')
       .addIntegerOption((o) => o.setName('number').setDescription('0 to 99 (0 is unlimited)').setRequired(true).setMinValue(0).setMaxValue(99)))
     .addSubcommand((s) => s.setName('transfer').setDescription('Transfer ownership to a member')
-      .addUserOption((o) => o.setName('user').setDescription('Member to transfer ownership to').setRequired(true)))
-    .addSubcommand((s) => s.setName('permit').setDescription('Allow a member to connect')
-      .addUserOption((o) => o.setName('user').setDescription('Member to permit').setRequired(true)))
-    .addSubcommand((s) => s.setName('reject').setDescription('Deny a member from connecting')
-      .addUserOption((o) => o.setName('user').setDescription('Member to reject').setRequired(true)));
+      .addUserOption((o) => o.setName('user').setDescription('Member to transfer ownership to').setRequired(true)));
 
   client.application.commands.set(
     [vcSlashCommand.toJSON()],
@@ -3220,68 +3144,6 @@ client.once('ready', () => {
 
 client.on('interactionCreate', async (interaction) => {
   if (shouldPauseTempVoiceActions()) return;
-  if (interaction.isButton() && interaction.customId.startsWith('tvreq:')) {
-    const parts = interaction.customId.split(':');
-    const action = parts[1];
-    const guildId = parts[2];
-    const channelId = parts[3];
-    const requesterId = parts[4];
-    const reqGuild = await client.guilds.fetch(guildId).catch(() => null);
-    const guildRef = interaction.guild || reqGuild;
-    const key = `${channelId}:${requesterId}`;
-    const reqChannel = await guildRef?.channels.fetch(channelId).catch(() => null);
-    if (!guildRef || !reqChannel || reqChannel.type !== ChannelType.GuildVoice) {
-      await interaction.reply({ content: 'Request is no longer valid.', ephemeral: true });
-      return;
-    }
-    if (interaction.channelId !== channelId) {
-      await interaction.reply({ content: 'Approve/Deny must be used from that temp voice channel chat.', ephemeral: true });
-      return;
-    }
-    const ownerId = resolveTempVoiceOwnerId(reqChannel);
-    if (ownerId !== interaction.user.id) {
-      await interaction.reply({ content: 'Only the current channel owner can approve/deny requests.', ephemeral: true });
-      return;
-    }
-    tempVoiceJoinRequests.delete(key);
-
-    if (action === 'approve') {
-      try {
-        await reqChannel.permissionOverwrites.edit(
-          requesterId,
-          { Connect: true, ViewChannel: true },
-          { reason: `Temp voice join approved by ${interaction.user.tag}` },
-        );
-        const requester = await guildRef.members.fetch(requesterId).catch(() => null);
-        if (requester?.voice) {
-          await requester.voice.setChannel(reqChannel, 'Approved join request for locked temp voice');
-        }
-        if (requester?.voice?.channel?.isTextBased()) {
-          await requester.voice.channel.send({ content: `${requester.toString()} request approved. You may join **${reqChannel.name}** now.` }).catch(() => {});
-        }
-        try { await guildRef.members.send(requesterId, `Your request to join **${reqChannel.name}** was approved.`); } catch {}
-        await interaction.reply({ content: 'Join request approved.', ephemeral: true });
-      } catch (err) {
-        console.error('Temp voice request approve failed:', err.message || err);
-        await interaction.reply({ content: 'Failed to approve request.', ephemeral: true });
-      }
-      return;
-    }
-
-    if (action === 'deny') {
-      const requester = await guildRef.members.fetch(requesterId).catch(() => null);
-      if (requester?.voice?.channel?.isTextBased()) {
-        await requester.voice.channel.send({ content: `${requester.toString()} Access Denied.` }).catch(() => {});
-      }
-      try { await guildRef.members.send(requesterId, 'Access Denied.'); } catch {}
-      await interaction.reply({ content: 'Join request denied.', ephemeral: true });
-      return;
-    }
-
-    await interaction.reply({ content: 'Unknown request action.', ephemeral: true });
-    return;
-  }
-
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== 'vc') return;
   if (!interaction.inGuild()) {
@@ -3292,7 +3154,7 @@ client.on('interactionCreate', async (interaction) => {
   const sub = interaction.options.getSubcommand();
   const rawName = sub === 'rename' ? interaction.options.getString('name', true) : '';
   const limitValue = sub === 'limit' ? interaction.options.getInteger('number', true) : undefined;
-  const userOption = (sub === 'transfer' || sub === 'permit' || sub === 'reject')
+  const userOption = (sub === 'transfer')
     ? interaction.options.getUser('user', true)
     : null;
   const targetMember = userOption ? await interaction.guild.members.fetch(userOption.id).catch(() => null) : null;
@@ -3321,67 +3183,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
   const joinedChannel = newState.channel;
   const leftChannel = oldState.channel;
-
-  if (
-    joinedChannel &&
-    joinedChannel.id !== TEMP_VOICE_TRIGGER_CHANNEL_ID &&
-    isTrackedTempVoiceChannel(joinedChannel) &&
-    isTempVoiceLocked(joinedChannel, newState.guild)
-  ) {
-    let ownerId = resolveTempVoiceOwnerId(joinedChannel) || tempVoiceOwners.get(joinedChannel.id) || null;
-    if (!ownerId) {
-      const ownerLike = joinedChannel.members.find((m) => joinedChannel.permissionOverwrites.cache.get(m.id)?.allow?.has('ManageChannels'));
-      if (ownerLike) {
-        ownerId = ownerLike.id;
-        tempVoiceOwners.set(joinedChannel.id, ownerId);
-        saveTempVoiceOwners();
-      }
-    }
-    if (!ownerId) return;
-    const isOwner = ownerId === member.id;
-    const isPermitted = isMemberExplicitlyPermitted(joinedChannel, member.id);
-    const canManageChannel = joinedChannel.permissionsFor(member)?.has(PermissionFlagsBits.ManageChannels);
-    if (!isOwner && !isPermitted && !canManageChannel) {
-      const key = `${joinedChannel.id}:${member.id}`;
-      const now = Date.now();
-      const lastTs = tempVoiceJoinRequests.get(key) || 0;
-      tempVoiceJoinRequests.set(key, now);
-
-      try {
-        if (TEMP_VOICE_WAITING_CHANNEL_ID) {
-          const waitingChannel = await newState.guild.channels.fetch(TEMP_VOICE_WAITING_CHANNEL_ID).catch(() => null);
-          if (waitingChannel && waitingChannel.type === ChannelType.GuildVoice) {
-            await member.voice.setChannel(waitingChannel, 'Waiting room for locked temp voice');
-          } else {
-            await member.voice.disconnect('Locked temp voice channel');
-          }
-        } else {
-          await member.voice.disconnect('Locked temp voice channel');
-        }
-      } catch (err) {
-        console.error('Temp voice lock enforcement move/disconnect failed:', err.message || err);
-      }
-
-      if (ownerId && now - lastTs > 10000) {
-        const ownerMember = joinedChannel.members.get(ownerId) || await newState.guild.members.fetch(ownerId).catch(() => null);
-        if (ownerMember && joinedChannel.isTextBased()) {
-          const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`tvreq:approve:${newState.guild.id}:${joinedChannel.id}:${member.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId(`tvreq:deny:${newState.guild.id}:${joinedChannel.id}:${member.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
-          );
-          try {
-            await joinedChannel.send({
-              content: `${ownerMember.toString()} ${member.toString()} wants to join locked channel **${joinedChannel.name}**.`,
-              components: [row],
-            });
-          } catch (err) {
-            console.warn('Could not post join request in temp voice chat:', err.message || err);
-          }
-        }
-      }
-      return;
-    }
-  }
 
   if (
     TEMP_VOICE_TRIGGER_CHANNEL_ID &&
