@@ -2904,28 +2904,7 @@ async function executeTempVoiceCommand(ctx) {
 }
 
 async function handleTempVoiceCommand(message) {
-  if (!message.guild || message.author.bot || !message.content) return false;
-  const content = message.content.trim();
-  if (!content.toLowerCase().startsWith('!vc')) return false;
-
-  const parts = content.split(/\s+/);
-  const sub = (parts[1] || 'help').toLowerCase();
-  const rawName = sub === 'rename' ? content.slice(parts[0].length + parts[1].length + 2) : '';
-  const limitValue = sub === 'limit' ? parts[2] : undefined;
-  const targetMember = message.mentions.members.first() || null;
-
-  return executeTempVoiceCommand({
-    guild: message.guild,
-    member: message.member,
-    authorId: message.author.id,
-    authorTag: message.author.tag,
-    authorMention: message.author.toString(),
-    sub,
-    rawName,
-    limitValue,
-    targetMember,
-    reply: async (text) => message.reply(text),
-  });
+  return false; // !vc text commands disabled; use /vc app commands only.
 }
 
 client.once('ready', () => {
