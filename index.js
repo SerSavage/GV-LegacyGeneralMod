@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Options, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Options, Partials, ChannelType } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -33,6 +33,10 @@ const RUNE_LATIN_FOLLOWUP_QUESTIONS_ONLY = process.env.RUNE_LATIN_FOLLOWUP_QUEST
 const RUNE_LATIN_ENGLISH_LINE = process.env.RUNE_LATIN_ENGLISH_LINE !== '0' && process.env.RUNE_LATIN_ENGLISH_LINE !== 'false';
 // After heuristics, call Google translate (auto→en) so non-English runic text can become English. Sends text to Google; set 0 to disable.
 const RUNE_LATIN_GOOGLE_TRANSLATE = process.env.RUNE_LATIN_GOOGLE_TRANSLATE !== '0' && process.env.RUNE_LATIN_GOOGLE_TRANSLATE !== 'false';
+// Temp voice channels: users join a "hub" voice channel, bot creates a temp channel in this category and moves them there.
+const TEMP_VOICE_CATEGORY_ID = String(process.env.TEMP_VOICE_CATEGORY_ID || '1166738417539887216');
+const TEMP_VOICE_TRIGGER_CHANNEL_ID = String(process.env.TEMP_VOICE_TRIGGER_CHANNEL_ID || '');
+const TEMP_VOICE_NAME_TEMPLATE = process.env.TEMP_VOICE_NAME_TEMPLATE || '{displayName}\'s channel';
 // Message to send when a word is detected
 // #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
@@ -2600,6 +2604,7 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers, // required for guildMemberAdd (enable "Server Members Intent" in Discord Developer Portal)
+    GatewayIntentBits.GuildVoiceStates, // required for temp voice create/move/delete
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions, // CSAM hold: detect author's ✅ on bot message
@@ -2617,6 +2622,99 @@ const client = new Client({
     },
   }),
 });
+
+const tempVoiceOwners = new Map(); // voiceChannelId -> ownerUserId
+const TEMP_VOICE_OWNER_PERMS = {
+  ManageChannels: true,
+  ManageRoles: true,
+  MoveMembers: true,
+  MuteMembers: true,
+  DeafenMembers: true,
+  PrioritySpeaker: true,
+};
+
+function buildTempVoiceName(member) {
+  const safeName = (member.displayName || member.user?.username || 'Temp').trim().slice(0, 80);
+  return TEMP_VOICE_NAME_TEMPLATE.replace('{displayName}', safeName).replace('{username}', member.user?.username || safeName);
+}
+
+function isTrackedTempVoiceChannel(channel) {
+  return !!channel && channel.type === ChannelType.GuildVoice && tempVoiceOwners.has(channel.id);
+}
+
+async function applyTempVoiceOwner(channel, userId) {
+  await channel.permissionOverwrites.edit(userId, TEMP_VOICE_OWNER_PERMS, { reason: 'Temp voice owner permissions' });
+}
+
+async function clearTempVoiceOwner(channel, userId) {
+  await channel.permissionOverwrites.edit(
+    userId,
+    {
+      ManageChannels: null,
+      ManageRoles: null,
+      MoveMembers: null,
+      MuteMembers: null,
+      DeafenMembers: null,
+      PrioritySpeaker: null,
+    },
+    { reason: 'Temp voice ownership transferred' },
+  );
+}
+
+async function handleTempVoiceCommand(message) {
+  if (!message.guild || message.author.bot || !message.content) return false;
+  const content = message.content.trim();
+  if (!content.toLowerCase().startsWith('!vc')) return false;
+
+  const parts = content.split(/\s+/);
+  const sub = (parts[1] || '').toLowerCase();
+  if (!sub || sub === 'help') {
+    await message.reply('Temp voice commands:\n`!vc transfer @user` - transfer ownership of your current temp voice channel.');
+    return true;
+  }
+  if (sub !== 'transfer' && sub !== 'owner') {
+    await message.reply('Unknown temp voice command. Use `!vc transfer @user`.');
+    return true;
+  }
+
+  const member = message.member;
+  const voiceChannel = member?.voice?.channel;
+  if (!voiceChannel || !isTrackedTempVoiceChannel(voiceChannel)) {
+    await message.reply('You must be inside your temp voice channel to transfer ownership.');
+    return true;
+  }
+
+  const currentOwnerId = tempVoiceOwners.get(voiceChannel.id);
+  if (currentOwnerId !== message.author.id) {
+    await message.reply('Only the current channel owner can transfer ownership.');
+    return true;
+  }
+
+  const targetMember = message.mentions.members.first();
+  if (!targetMember) {
+    await message.reply('Mention a user to transfer ownership: `!vc transfer @user`.');
+    return true;
+  }
+  if (targetMember.id === message.author.id) {
+    await message.reply('You already own this temp voice channel.');
+    return true;
+  }
+  if (targetMember.voice?.channelId !== voiceChannel.id) {
+    await message.reply('The new owner must be in the same temp voice channel.');
+    return true;
+  }
+
+  try {
+    await applyTempVoiceOwner(voiceChannel, targetMember.id);
+    await clearTempVoiceOwner(voiceChannel, message.author.id);
+    tempVoiceOwners.set(voiceChannel.id, targetMember.id);
+    await message.reply(`Ownership transferred to ${targetMember.toString()}.`);
+  } catch (err) {
+    console.error('Temp voice ownership transfer failed:', err.message || err);
+    await message.reply('Could not transfer ownership. Ensure the bot has Manage Channels and Manage Roles permissions.');
+  }
+  return true;
+}
 
 client.once('ready', () => {
   botReadyAt = Date.now();
@@ -2784,6 +2882,55 @@ client.once('ready', () => {
   } else if (DEBUG) {
     console.log('[nexus-mod-watch] disabled (set NEXUS_API_KEY; optional NEXUS_MOD_ID / NEXUS_MOD_NOTIFY_CHANNEL_ID)');
   }
+
+  if (!TEMP_VOICE_TRIGGER_CHANNEL_ID) {
+    console.warn('Temp voice disabled: set TEMP_VOICE_TRIGGER_CHANNEL_ID to your "join to create" voice channel ID.');
+  } else {
+    console.log(`Temp voice enabled: trigger=${TEMP_VOICE_TRIGGER_CHANNEL_ID}, category=${TEMP_VOICE_CATEGORY_ID}`);
+  }
+});
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  const member = newState.member || oldState.member;
+  if (!member || member.user.bot) return;
+
+  const joinedChannel = newState.channel;
+  const leftChannel = oldState.channel;
+
+  if (
+    TEMP_VOICE_TRIGGER_CHANNEL_ID &&
+    joinedChannel &&
+    joinedChannel.id === TEMP_VOICE_TRIGGER_CHANNEL_ID &&
+    oldState.channelId !== newState.channelId
+  ) {
+    try {
+      const created = await newState.guild.channels.create({
+        name: buildTempVoiceName(member),
+        type: ChannelType.GuildVoice,
+        parent: TEMP_VOICE_CATEGORY_ID,
+        reason: `Temp voice requested by ${member.user.tag}`,
+      });
+      tempVoiceOwners.set(created.id, member.id);
+      await applyTempVoiceOwner(created, member.id);
+      await member.voice.setChannel(created, 'Move user to newly created temp voice');
+      if (DEBUG) console.log(`[temp-voice] Created ${created.id} for ${member.user.tag}`);
+    } catch (err) {
+      console.error('Temp voice create/move failed:', err.message || err);
+    }
+  }
+
+  if (isTrackedTempVoiceChannel(leftChannel)) {
+    const humansLeft = leftChannel.members.filter((m) => !m.user.bot).size;
+    if (humansLeft === 0) {
+      try {
+        tempVoiceOwners.delete(leftChannel.id);
+        await leftChannel.delete('Temp voice empty');
+        if (DEBUG) console.log(`[temp-voice] Deleted empty channel ${leftChannel.id}`);
+      } catch (err) {
+        console.error('Temp voice delete failed:', err.message || err);
+      }
+    }
+  }
 });
 
 // When a user joins the server, post the welcome video + user tag in #new-arrivals (skip if already welcomed on role to avoid double message)
@@ -2852,6 +2999,8 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async (message) => {
   // Never read or process DMs. Message Content Intent is required for gv-general only; we ignore all DM messages.
   if (!message.guild) return;
+
+  if (await handleTempVoiceCommand(message)) return;
 
   const channelId = String(message.channelId);
 
