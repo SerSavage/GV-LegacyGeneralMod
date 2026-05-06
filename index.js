@@ -2653,6 +2653,8 @@ function saveTempVoiceOwners() {
 const tempVoiceOwners = loadTempVoiceOwners(); // voiceChannelId -> ownerUserId
 const tempVoiceJoinRequests = new Map(); // key channelId:userId -> timestamp
 const TEMP_VOICE_OWNER_PERMS = {
+  Connect: true,
+  ViewChannel: true,
   ManageChannels: true,
   ManageRoles: true,
   MoveMembers: true,
@@ -2678,7 +2680,7 @@ function resolveTempVoiceOwnerId(channel) {
   const fromMap = tempVoiceOwners.get(channel.id);
   if (fromMap) return fromMap;
   for (const [id, overwrite] of channel.permissionOverwrites.cache.entries()) {
-    if (overwrite.type !== 1) continue; // member overwrite
+    if (overwrite.type !== 1 && overwrite.type !== 'member') continue; // member overwrite
     if (overwrite.allow?.has('ManageChannels')) return id;
   }
   return null;
@@ -2834,10 +2836,16 @@ async function executeTempVoiceCommand(ctx) {
   if (sub === 'lock' || sub === 'unlock') {
     const lock = sub === 'lock';
     try {
+      const ownerId = resolveTempVoiceOwnerId(voiceChannel) || authorId;
       await voiceChannel.permissionOverwrites.edit(
         guild.roles.everyone.id,
         { Connect: lock ? false : null },
         { reason: `Temp voice ${sub} by ${authorTag}` },
+      );
+      await voiceChannel.permissionOverwrites.edit(
+        ownerId,
+        TEMP_VOICE_OWNER_PERMS,
+        { reason: `Temp voice owner keep-access on ${sub}` },
       );
       await reply(lock ? 'Channel locked.' : 'Channel unlocked.');
     } catch (err) {
