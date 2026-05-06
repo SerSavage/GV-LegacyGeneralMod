@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -38,6 +38,7 @@ const TEMP_VOICE_CATEGORY_ID = String(process.env.TEMP_VOICE_CATEGORY_ID || '116
 const TEMP_VOICE_TRIGGER_CHANNEL_ID = String(process.env.TEMP_VOICE_TRIGGER_CHANNEL_ID || '');
 const TEMP_VOICE_NAME_TEMPLATE = process.env.TEMP_VOICE_NAME_TEMPLATE || '{displayName}\'s channel';
 const TEMP_VOICE_COMMAND_GUILD_ID = String(process.env.TEMP_VOICE_COMMAND_GUILD_ID || '');
+const TEMP_VOICE_WAITING_CHANNEL_ID = String(process.env.TEMP_VOICE_WAITING_CHANNEL_ID || '');
 const TEMP_VOICE_OWNERS_FILE = path.join(process.cwd(), 'temp-voice-owners.json');
 // Message to send when a word is detected
 // #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
@@ -2650,6 +2651,7 @@ function saveTempVoiceOwners() {
 }
 
 const tempVoiceOwners = loadTempVoiceOwners(); // voiceChannelId -> ownerUserId
+const tempVoiceJoinRequests = new Map(); // key channelId:userId -> timestamp
 const TEMP_VOICE_OWNER_PERMS = {
   ManageChannels: true,
   ManageRoles: true,
@@ -2689,6 +2691,17 @@ function findOwnedTempVoiceChannel(guild, userId) {
     if (ch && ch.type === ChannelType.GuildVoice) return ch;
   }
   return null;
+}
+
+function isTempVoiceLocked(channel, guild) {
+  if (!channel || !guild) return false;
+  const everyoneOw = channel.permissionOverwrites.cache.get(guild.roles.everyone.id);
+  return Boolean(everyoneOw?.deny?.has('Connect'));
+}
+
+function isMemberExplicitlyPermitted(channel, memberId) {
+  const ow = channel?.permissionOverwrites?.cache?.get(memberId);
+  return Boolean(ow?.allow?.has('Connect'));
 }
 
 async function applyTempVoiceOwner(channel, userId) {
@@ -3147,6 +3160,54 @@ client.once('ready', () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  if (interaction.isButton() && interaction.customId.startsWith('tvreq:')) {
+    const parts = interaction.customId.split(':');
+    const action = parts[1];
+    const channelId = parts[2];
+    const requesterId = parts[3];
+    const key = `${channelId}:${requesterId}`;
+    const reqChannel = await interaction.guild?.channels.fetch(channelId).catch(() => null);
+    if (!interaction.inGuild() || !reqChannel || reqChannel.type !== ChannelType.GuildVoice) {
+      await interaction.reply({ content: 'Request is no longer valid.', ephemeral: true });
+      return;
+    }
+    const ownerId = resolveTempVoiceOwnerId(reqChannel);
+    if (ownerId !== interaction.user.id) {
+      await interaction.reply({ content: 'Only the current channel owner can approve/deny requests.', ephemeral: true });
+      return;
+    }
+    tempVoiceJoinRequests.delete(key);
+
+    if (action === 'approve') {
+      try {
+        await reqChannel.permissionOverwrites.edit(
+          requesterId,
+          { Connect: true, ViewChannel: true },
+          { reason: `Temp voice join approved by ${interaction.user.tag}` },
+        );
+        const requester = await interaction.guild.members.fetch(requesterId).catch(() => null);
+        if (requester?.voice) {
+          await requester.voice.setChannel(reqChannel, 'Approved join request for locked temp voice');
+        }
+        try { await interaction.guild.members.send(requesterId, `Your request to join **${reqChannel.name}** was approved.`); } catch {}
+        await interaction.reply({ content: 'Join request approved.', ephemeral: true });
+      } catch (err) {
+        console.error('Temp voice request approve failed:', err.message || err);
+        await interaction.reply({ content: 'Failed to approve request.', ephemeral: true });
+      }
+      return;
+    }
+
+    if (action === 'deny') {
+      try { await interaction.guild.members.send(requesterId, 'Access Denied.'); } catch {}
+      await interaction.reply({ content: 'Join request denied.', ephemeral: true });
+      return;
+    }
+
+    await interaction.reply({ content: 'Unknown request action.', ephemeral: true });
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== 'vc') return;
   if (!interaction.inGuild()) {
@@ -3188,6 +3249,57 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
   const joinedChannel = newState.channel;
   const leftChannel = oldState.channel;
+
+  if (
+    joinedChannel &&
+    joinedChannel.id !== TEMP_VOICE_TRIGGER_CHANNEL_ID &&
+    isTrackedTempVoiceChannel(joinedChannel) &&
+    isTempVoiceLocked(joinedChannel, newState.guild)
+  ) {
+    const ownerId = resolveTempVoiceOwnerId(joinedChannel);
+    const isOwner = ownerId === member.id;
+    const isPermitted = isMemberExplicitlyPermitted(joinedChannel, member.id);
+    if (!isOwner && !isPermitted) {
+      const key = `${joinedChannel.id}:${member.id}`;
+      const now = Date.now();
+      const lastTs = tempVoiceJoinRequests.get(key) || 0;
+      tempVoiceJoinRequests.set(key, now);
+
+      try {
+        if (TEMP_VOICE_WAITING_CHANNEL_ID) {
+          const waitingChannel = await newState.guild.channels.fetch(TEMP_VOICE_WAITING_CHANNEL_ID).catch(() => null);
+          if (waitingChannel && waitingChannel.type === ChannelType.GuildVoice) {
+            await member.voice.setChannel(waitingChannel, 'Waiting room for locked temp voice');
+          } else {
+            await member.voice.disconnect('Locked temp voice channel');
+          }
+        } else {
+          await member.voice.disconnect('Locked temp voice channel');
+        }
+      } catch (err) {
+        console.error('Temp voice lock enforcement move/disconnect failed:', err.message || err);
+      }
+
+      if (ownerId && now - lastTs > 10000) {
+        const ownerMember = await newState.guild.members.fetch(ownerId).catch(() => null);
+        if (ownerMember) {
+          const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`tvreq:approve:${joinedChannel.id}:${member.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`tvreq:deny:${joinedChannel.id}:${member.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+          );
+          try {
+            await ownerMember.send({
+              content: `${member.user.tag} wants to join your locked channel **${joinedChannel.name}**.`,
+              components: [row],
+            });
+          } catch (err) {
+            console.warn('Could not DM temp voice owner for join request:', err.message || err);
+          }
+        }
+      }
+      return;
+    }
+  }
 
   if (
     TEMP_VOICE_TRIGGER_CHANNEL_ID &&
