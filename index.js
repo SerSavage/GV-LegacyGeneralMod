@@ -2665,7 +2665,30 @@ function buildTempVoiceName(member) {
 }
 
 function isTrackedTempVoiceChannel(channel) {
-  return !!channel && channel.type === ChannelType.GuildVoice && tempVoiceOwners.has(channel.id);
+  if (!channel || channel.type !== ChannelType.GuildVoice) return false;
+  if (channel.id === TEMP_VOICE_TRIGGER_CHANNEL_ID) return false;
+  if (tempVoiceOwners.has(channel.id)) return true;
+  return Boolean(resolveTempVoiceOwnerId(channel));
+}
+
+function resolveTempVoiceOwnerId(channel) {
+  if (!channel || channel.type !== ChannelType.GuildVoice) return null;
+  const fromMap = tempVoiceOwners.get(channel.id);
+  if (fromMap) return fromMap;
+  for (const [id, overwrite] of channel.permissionOverwrites.cache.entries()) {
+    if (overwrite.type !== 1) continue; // member overwrite
+    if (overwrite.allow?.has('ManageChannels')) return id;
+  }
+  return null;
+}
+
+function findOwnedTempVoiceChannel(guild, userId) {
+  for (const [channelId, ownerId] of tempVoiceOwners.entries()) {
+    if (ownerId !== userId) continue;
+    const ch = guild.channels.cache.get(channelId);
+    if (ch && ch.type === ChannelType.GuildVoice) return ch;
+  }
+  return null;
 }
 
 async function applyTempVoiceOwner(channel, userId) {
@@ -2735,7 +2758,8 @@ function tempVoiceHelpText(prefix = '!vc') {
 
 async function executeTempVoiceCommand(ctx) {
   const { guild, member, authorId, authorTag, authorMention, sub, rawName, limitValue, targetMember, reply } = ctx;
-  const voiceChannel = member?.voice?.channel || null;
+  const freshMember = await guild.members.fetch(authorId).catch(() => member || null);
+  const voiceChannel = freshMember?.voice?.channel || member?.voice?.channel || null;
   const requiresOwnedChannel = sub === 'transfer'
     || sub === 'owner'
     || sub === 'rename'
@@ -2755,7 +2779,7 @@ async function executeTempVoiceCommand(ctx) {
       await reply('You must be inside your temp voice channel to use this command.');
       return true;
     }
-    const currentOwnerId = tempVoiceOwners.get(voiceChannel.id);
+    const currentOwnerId = resolveTempVoiceOwnerId(voiceChannel);
     if (currentOwnerId !== authorId) {
       await reply('Only the current channel owner can use this command.');
       return true;
@@ -2843,7 +2867,7 @@ async function executeTempVoiceCommand(ctx) {
       await reply('You must be inside a temp voice channel to claim ownership.');
       return true;
     }
-    const currentOwnerId = tempVoiceOwners.get(voiceChannel.id);
+    const currentOwnerId = resolveTempVoiceOwnerId(voiceChannel);
     if (!currentOwnerId) {
       tempVoiceOwners.set(voiceChannel.id, authorId);
       saveTempVoiceOwners();
@@ -3113,6 +3137,13 @@ client.once('ready', () => {
   }).catch((err) => {
     console.error('Slash command registration failed:', err.message || err);
   });
+  if (TEMP_VOICE_COMMAND_GUILD_ID) {
+    client.application.commands.set([], undefined).then(() => {
+      console.log('Cleared global app commands to avoid duplicate /vc entries.');
+    }).catch((err) => {
+      console.warn('Could not clear global app commands:', err.message || err);
+    });
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -3165,6 +3196,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     oldState.channelId !== newState.channelId
   ) {
     try {
+      const existingOwned = findOwnedTempVoiceChannel(newState.guild, member.id);
+      if (existingOwned) {
+        await member.voice.setChannel(existingOwned, 'Move user to existing owned temp voice');
+        return;
+      }
       const created = await newState.guild.channels.create({
         name: buildTempVoiceName(member),
         type: ChannelType.GuildVoice,
