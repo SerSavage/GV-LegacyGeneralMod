@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Options, Partials, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -37,6 +37,7 @@ const RUNE_LATIN_GOOGLE_TRANSLATE = process.env.RUNE_LATIN_GOOGLE_TRANSLATE !== 
 const TEMP_VOICE_CATEGORY_ID = String(process.env.TEMP_VOICE_CATEGORY_ID || '1166738417539887216');
 const TEMP_VOICE_TRIGGER_CHANNEL_ID = String(process.env.TEMP_VOICE_TRIGGER_CHANNEL_ID || '');
 const TEMP_VOICE_NAME_TEMPLATE = process.env.TEMP_VOICE_NAME_TEMPLATE || '{displayName}\'s channel';
+const TEMP_VOICE_COMMAND_GUILD_ID = String(process.env.TEMP_VOICE_COMMAND_GUILD_ID || '');
 // Message to send when a word is detected
 // #off-topic — Chronicus + “please move here” education (gv-general warning still points here)
 const REDIRECT_CHANNEL_ID = String(process.env.REDIRECT_CHANNEL_ID || '1168446788810842172');
@@ -2670,28 +2671,21 @@ function canClaimTempVoiceOwnership(guild, channel, ownerId) {
   return ownerMember.voice?.channelId !== channel.id;
 }
 
-async function handleTempVoiceCommand(message) {
-  if (!message.guild || message.author.bot || !message.content) return false;
-  const content = message.content.trim();
-  if (!content.toLowerCase().startsWith('!vc')) return false;
+function tempVoiceHelpText(prefix = '!vc') {
+  return [
+    'Temp voice commands:',
+    `\`${prefix} help\` - show this help.`,
+    `\`${prefix} transfer @user\` - transfer ownership of your current temp voice channel.`,
+    `\`${prefix} rename <new name>\` - rename your current temp voice channel.`,
+    `\`${prefix} limit <number>\` - set user limit (0-99, where 0 means unlimited).`,
+    `\`${prefix} lock\` / \`${prefix} unlock\` - close or open your temp channel for @everyone.`,
+    `\`${prefix} permit @user\` / \`${prefix} reject @user\` - allow or deny a specific member.`,
+    `\`${prefix} claim\` - become owner if current owner is gone.`,
+  ].join('\n');
+}
 
-  const parts = content.split(/\s+/);
-  const sub = (parts[1] || '').toLowerCase();
-  if (!sub || sub === 'help') {
-    await message.reply(
-      'Temp voice commands:\n'
-      + '`!vc help` - show this help.\n'
-      + '`!vc transfer @user` - transfer ownership of your current temp voice channel.\n'
-      + '`!vc rename <new name>` - rename your current temp voice channel.\n'
-      + '`!vc limit <number>` - set user limit (0-99, where 0 means unlimited).\n'
-      + '`!vc lock` / `!vc unlock` - close or open your temp channel for @everyone.\n'
-      + '`!vc permit @user` / `!vc reject @user` - allow or deny a specific member.\n'
-      + '`!vc claim` - become owner if current owner is gone.',
-    );
-    return true;
-  }
-
-  const member = message.member;
+async function executeTempVoiceCommand(ctx) {
+  const { guild, member, authorId, authorTag, authorMention, sub, rawName, limitValue, targetMember, reply } = ctx;
   const voiceChannel = member?.voice?.channel || null;
   const requiresOwnedChannel = sub === 'transfer'
     || sub === 'owner'
@@ -2701,52 +2695,52 @@ async function handleTempVoiceCommand(message) {
     || sub === 'unlock'
     || sub === 'permit'
     || sub === 'reject';
+
+  if (sub === 'help') {
+    await reply(tempVoiceHelpText('/vc'));
+    return true;
+  }
+
   if (requiresOwnedChannel) {
     if (!voiceChannel || !isTrackedTempVoiceChannel(voiceChannel)) {
-      await message.reply('You must be inside your temp voice channel to use this command.');
+      await reply('You must be inside your temp voice channel to use this command.');
       return true;
     }
     const currentOwnerId = tempVoiceOwners.get(voiceChannel.id);
-    if (currentOwnerId !== message.author.id) {
-      await message.reply('Only the current channel owner can use this command.');
+    if (currentOwnerId !== authorId) {
+      await reply('Only the current channel owner can use this command.');
       return true;
     }
   }
 
   if (sub === 'rename') {
-    const newName = content.slice(parts[0].length + parts[1].length + 2).trim();
-    if (!newName) {
-      await message.reply('Provide a new name: `!vc rename <new name>`.');
+    const safeNewName = String(rawName || '').trim().slice(0, 100);
+    if (!safeNewName) {
+      await reply('Provide a new name: `/vc rename name:<new name>`.');
       return true;
     }
-    const safeNewName = newName.slice(0, 100);
     try {
-      await voiceChannel.setName(safeNewName, `Temp voice rename by ${message.author.tag}`);
-      await message.reply(`Channel renamed to **${safeNewName}**.`);
+      await voiceChannel.setName(safeNewName, `Temp voice rename by ${authorTag}`);
+      await reply(`Channel renamed to **${safeNewName}**.`);
     } catch (err) {
       console.error('Temp voice rename failed:', err.message || err);
-      await message.reply('Could not rename channel. Ensure the bot has Manage Channels permission.');
+      await reply('Could not rename channel. Ensure the bot has Manage Channels permission.');
     }
     return true;
   }
 
   if (sub === 'limit') {
-    const rawLimit = (parts[2] || '').trim();
-    if (!/^\d+$/.test(rawLimit)) {
-      await message.reply('Provide a number between 0 and 99: `!vc limit <number>`.');
-      return true;
-    }
-    const parsed = Number(rawLimit);
-    if (parsed < 0 || parsed > 99) {
-      await message.reply('Limit must be between 0 and 99.');
+    const parsed = Number(limitValue);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 99) {
+      await reply('Limit must be a whole number between 0 and 99.');
       return true;
     }
     try {
-      await voiceChannel.setUserLimit(parsed, `Temp voice limit set by ${message.author.tag}`);
-      await message.reply(parsed === 0 ? 'User limit removed (unlimited).' : `User limit set to **${parsed}**.`);
+      await voiceChannel.setUserLimit(parsed, `Temp voice limit set by ${authorTag}`);
+      await reply(parsed === 0 ? 'User limit removed (unlimited).' : `User limit set to **${parsed}**.`);
     } catch (err) {
       console.error('Temp voice limit update failed:', err.message || err);
-      await message.reply('Could not update user limit. Ensure the bot has Manage Channels permission.');
+      await reply('Could not update user limit. Ensure the bot has Manage Channels permission.');
     }
     return true;
   }
@@ -2755,35 +2749,34 @@ async function handleTempVoiceCommand(message) {
     const lock = sub === 'lock';
     try {
       await voiceChannel.permissionOverwrites.edit(
-        message.guild.roles.everyone.id,
+        guild.roles.everyone.id,
         { Connect: lock ? false : null },
-        { reason: `Temp voice ${sub} by ${message.author.tag}` },
+        { reason: `Temp voice ${sub} by ${authorTag}` },
       );
-      await message.reply(lock ? 'Channel locked.' : 'Channel unlocked.');
+      await reply(lock ? 'Channel locked.' : 'Channel unlocked.');
     } catch (err) {
       console.error(`Temp voice ${sub} failed:`, err.message || err);
-      await message.reply('Could not update lock state. Ensure the bot has Manage Channels permission.');
+      await reply('Could not update lock state. Ensure the bot has Manage Channels permission.');
     }
     return true;
   }
 
   if (sub === 'permit' || sub === 'reject') {
-    const targetMember = message.mentions.members.first();
     if (!targetMember) {
-      await message.reply(`Mention a user: \`!vc ${sub} @user\`.`);
+      await reply(`Mention/select a user: \`/vc ${sub} user:@member\`.`);
       return true;
     }
-    if (targetMember.id === message.author.id) {
-      await message.reply('This command is only for other users.');
+    if (targetMember.id === authorId) {
+      await reply('This command is only for other users.');
       return true;
     }
     try {
       await voiceChannel.permissionOverwrites.edit(
         targetMember.id,
         { Connect: sub === 'permit', ViewChannel: sub === 'permit' ? true : null },
-        { reason: `Temp voice ${sub} by ${message.author.tag}` },
+        { reason: `Temp voice ${sub} by ${authorTag}` },
       );
-      await message.reply(sub === 'permit'
+      await reply(sub === 'permit'
         ? `${targetMember.toString()} is now permitted to join.`
         : `${targetMember.toString()} is now rejected from joining.`);
       if (sub === 'reject' && targetMember.voice?.channelId === voiceChannel.id) {
@@ -2791,72 +2784,96 @@ async function handleTempVoiceCommand(message) {
       }
     } catch (err) {
       console.error(`Temp voice ${sub} failed:`, err.message || err);
-      await message.reply('Could not update user permissions. Ensure the bot has Manage Channels and Move Members permissions.');
+      await reply('Could not update user permissions. Ensure the bot has Manage Channels and Move Members permissions.');
     }
     return true;
   }
 
   if (sub === 'claim') {
     if (!voiceChannel || !isTrackedTempVoiceChannel(voiceChannel)) {
-      await message.reply('You must be inside a temp voice channel to claim ownership.');
+      await reply('You must be inside a temp voice channel to claim ownership.');
       return true;
     }
     const currentOwnerId = tempVoiceOwners.get(voiceChannel.id);
     if (!currentOwnerId) {
-      tempVoiceOwners.set(voiceChannel.id, message.author.id);
-      await applyTempVoiceOwner(voiceChannel, message.author.id);
-      await message.reply('Ownership claimed.');
+      tempVoiceOwners.set(voiceChannel.id, authorId);
+      await applyTempVoiceOwner(voiceChannel, authorId);
+      await reply('Ownership claimed.');
       return true;
     }
-    if (currentOwnerId === message.author.id) {
-      await message.reply('You already own this temp voice channel.');
+    if (currentOwnerId === authorId) {
+      await reply('You already own this temp voice channel.');
       return true;
     }
-    if (!canClaimTempVoiceOwnership(message.guild, voiceChannel, currentOwnerId)) {
-      await message.reply('Current owner is still active in this channel, so it cannot be claimed.');
+    if (!canClaimTempVoiceOwnership(guild, voiceChannel, currentOwnerId)) {
+      await reply('Current owner is still active in this channel, so it cannot be claimed.');
       return true;
     }
     try {
-      await applyTempVoiceOwner(voiceChannel, message.author.id);
+      await applyTempVoiceOwner(voiceChannel, authorId);
       await clearTempVoiceOwner(voiceChannel, currentOwnerId);
-      tempVoiceOwners.set(voiceChannel.id, message.author.id);
-      await message.reply(`Ownership claimed by ${message.author.toString()}.`);
+      tempVoiceOwners.set(voiceChannel.id, authorId);
+      await reply(`Ownership claimed by ${authorMention}.`);
     } catch (err) {
       console.error('Temp voice claim failed:', err.message || err);
-      await message.reply('Could not claim ownership. Ensure the bot has Manage Channels and Manage Roles permissions.');
+      await reply('Could not claim ownership. Ensure the bot has Manage Channels and Manage Roles permissions.');
     }
     return true;
   }
 
   if (sub !== 'transfer' && sub !== 'owner') {
-    await message.reply('Unknown temp voice command. Use `!vc help`.');
+    await reply('Unknown temp voice command. Use `/vc help`.');
     return true;
   }
 
-  const targetMember = message.mentions.members.first();
   if (!targetMember) {
-    await message.reply('Mention a user to transfer ownership: `!vc transfer @user`.');
+    await reply('Choose a user to transfer ownership: `/vc transfer user:@member`.');
     return true;
   }
-  if (targetMember.id === message.author.id) {
-    await message.reply('You already own this temp voice channel.');
+  if (targetMember.id === authorId) {
+    await reply('You already own this temp voice channel.');
     return true;
   }
   if (targetMember.voice?.channelId !== voiceChannel.id) {
-    await message.reply('The new owner must be in the same temp voice channel.');
+    await reply('The new owner must be in the same temp voice channel.');
     return true;
   }
 
   try {
     await applyTempVoiceOwner(voiceChannel, targetMember.id);
-    await clearTempVoiceOwner(voiceChannel, message.author.id);
+    await clearTempVoiceOwner(voiceChannel, authorId);
     tempVoiceOwners.set(voiceChannel.id, targetMember.id);
-    await message.reply(`Ownership transferred to ${targetMember.toString()}.`);
+    await reply(`Ownership transferred to ${targetMember.toString()}.`);
   } catch (err) {
     console.error('Temp voice ownership transfer failed:', err.message || err);
-    await message.reply('Could not transfer ownership. Ensure the bot has Manage Channels and Manage Roles permissions.');
+    await reply('Could not transfer ownership. Ensure the bot has Manage Channels and Manage Roles permissions.');
   }
   return true;
+}
+
+async function handleTempVoiceCommand(message) {
+  if (!message.guild || message.author.bot || !message.content) return false;
+  const content = message.content.trim();
+  if (!content.toLowerCase().startsWith('!vc')) return false;
+
+  const parts = content.split(/\s+/);
+  const sub = (parts[1] || 'help').toLowerCase();
+  const rawName = sub === 'rename' ? content.slice(parts[0].length + parts[1].length + 2) : '';
+  const limitValue = sub === 'limit' ? parts[2] : undefined;
+  const targetMember = message.mentions.members.first() || null;
+
+  return executeTempVoiceCommand({
+    guild: message.guild,
+    member: message.member,
+    authorId: message.author.id,
+    authorTag: message.author.tag,
+    authorMention: message.author.toString(),
+    sub,
+    rawName,
+    limitValue,
+    targetMember,
+    reply: async (text) => message.reply(text),
+  });
 }
 
 client.once('ready', () => {
@@ -3031,6 +3048,70 @@ client.once('ready', () => {
   } else {
     console.log(`Temp voice enabled: trigger=${TEMP_VOICE_TRIGGER_CHANNEL_ID}, category=${TEMP_VOICE_CATEGORY_ID}`);
   }
+
+  const vcSlashCommand = new SlashCommandBuilder()
+    .setName('vc')
+    .setDescription('Manage your temporary voice channel')
+    .addSubcommand((s) => s.setName('help').setDescription('Show temp voice help'))
+    .addSubcommand((s) => s.setName('claim').setDescription('Claim ownership if owner is gone'))
+    .addSubcommand((s) => s.setName('lock').setDescription('Lock your temp voice channel'))
+    .addSubcommand((s) => s.setName('unlock').setDescription('Unlock your temp voice channel'))
+    .addSubcommand((s) => s.setName('rename').setDescription('Rename your temp voice channel')
+      .addStringOption((o) => o.setName('name').setDescription('New voice channel name').setRequired(true)))
+    .addSubcommand((s) => s.setName('limit').setDescription('Set user limit (0-99)')
+      .addIntegerOption((o) => o.setName('number').setDescription('0 to 99 (0 is unlimited)').setRequired(true).setMinValue(0).setMaxValue(99)))
+    .addSubcommand((s) => s.setName('transfer').setDescription('Transfer ownership to a member')
+      .addUserOption((o) => o.setName('user').setDescription('Member to transfer ownership to').setRequired(true)))
+    .addSubcommand((s) => s.setName('permit').setDescription('Allow a member to connect')
+      .addUserOption((o) => o.setName('user').setDescription('Member to permit').setRequired(true)))
+    .addSubcommand((s) => s.setName('reject').setDescription('Deny a member from connecting')
+      .addUserOption((o) => o.setName('user').setDescription('Member to reject').setRequired(true)));
+
+  client.application.commands.set(
+    [vcSlashCommand.toJSON()],
+    TEMP_VOICE_COMMAND_GUILD_ID || undefined,
+  ).then(() => {
+    if (TEMP_VOICE_COMMAND_GUILD_ID) console.log(`Registered /vc command in guild ${TEMP_VOICE_COMMAND_GUILD_ID}`);
+    else console.log('Registered global /vc command (may take up to ~1 hour to appear).');
+  }).catch((err) => {
+    console.error('Slash command registration failed:', err.message || err);
+  });
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== 'vc') return;
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'This command only works in a server.', ephemeral: true });
+    return;
+  }
+
+  const sub = interaction.options.getSubcommand();
+  const rawName = sub === 'rename' ? interaction.options.getString('name', true) : '';
+  const limitValue = sub === 'limit' ? interaction.options.getInteger('number', true) : undefined;
+  const userOption = (sub === 'transfer' || sub === 'permit' || sub === 'reject')
+    ? interaction.options.getUser('user', true)
+    : null;
+  const targetMember = userOption ? await interaction.guild.members.fetch(userOption.id).catch(() => null) : null;
+  const invokingMember = interaction.member && 'voice' in interaction.member
+    ? interaction.member
+    : await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+
+  await executeTempVoiceCommand({
+    guild: interaction.guild,
+    member: invokingMember,
+    authorId: interaction.user.id,
+    authorTag: interaction.user.tag,
+    authorMention: interaction.user.toString(),
+    sub,
+    rawName,
+    limitValue,
+    targetMember,
+    reply: async (text) => {
+      if (interaction.replied || interaction.deferred) return interaction.followUp({ content: text, ephemeral: true });
+      return interaction.reply({ content: text, ephemeral: true });
+    },
+  });
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
