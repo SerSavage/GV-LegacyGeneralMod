@@ -1244,6 +1244,9 @@ function looksLikeDelusionVariant(text, strict) {
     const t = tok.replace(/[^a-z]/g, '');
     if (!t) continue;
     if (DELUSION_FUZZY_EXCLUDE_TOKENS.has(t)) continue;
+    // "discussion" → normalizeForMatch collapses ss → "discusion", which falsely scored like "delusion"
+    // (overlap + edit distance). Delusion slurs/evasions do not use the English discuss- stem — skip it.
+    if (t.startsWith('discus')) continue;
     if (targets.some((x) => t.includes(x))) return true;
     if (t.length < 6 || t.length > 18) continue;
     const overlap = multisetOverlapCount(t, 'delusion');
