@@ -1260,8 +1260,9 @@ function looksLikeDelusionVariant(text, strict) {
       || t.includes('lusi')
       || /d[e]+l+u+l+u+/.test(t)
       || (t.includes('del') && t.includes('usi'));
-    if (overlap >= 6 && (minDist <= 3 || hasCore)) return true;
-    if (strict && overlap >= 5 && (minDist <= 4 || hasCore)) return true;
+    // Overlap/edit-distance alone must not fire (e.g. "decisions" ≈ delusion); require delu/lusi core.
+    if (overlap >= 6 && hasCore && minDist <= 3) return true;
+    if (strict && overlap >= 5 && hasCore && minDist <= 4) return true;
   }
   return false;
 }
