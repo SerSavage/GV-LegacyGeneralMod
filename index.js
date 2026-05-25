@@ -3356,17 +3356,19 @@ client.on('messageCreate', async (message) => {
     resetSpamWatchRollingCounters(`mention of <@${SPAM_WATCH_USER_ID}> from ${message.author.id}`);
   }
 
-  if (shouldReplyNoobmars(message)) {
-    try {
-      await message.author.send(getNoobmarsDmPayload());
-    } catch (err) {
-      console.error('Noobmars DM failed (user may have DMs closed):', err.message);
-      if (channelId === TRIGGER_CHANNEL_ID) {
-        await relayNoobmarsToHoldOnDmFailure(message);
-      }
-    }
-    return;
-  }
+  // TEMPORARY: Noobmars auto-reply disabled (DM + hold-channel author ping when list users tag/mention target).
+  // Re-enable when ready: uncomment block below.
+  // if (shouldReplyNoobmars(message)) {
+  //   try {
+  //     await message.author.send(getNoobmarsDmPayload());
+  //   } catch (err) {
+  //     console.error('Noobmars DM failed (user may have DMs closed):', err.message);
+  //     if (channelId === TRIGGER_CHANNEL_ID) {
+  //       await relayNoobmarsToHoldOnDmFailure(message);
+  //     }
+  //   }
+  //   return;
+  // }
 
   // Replace Israel flag tokens with :flag_ps: (delete original + repost in same channel)
   if (hasIsraelFlagToken(message.content)) {
