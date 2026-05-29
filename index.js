@@ -708,11 +708,9 @@ function buildOffTopicPhrases() {
     add(`fuck a ${r}`);
     add(`fuck ${r}`);
   }
-  // "lets fuck a ...", "let's fuck a ..."
+  // "lets fuck a ...", "let's fuck a ..." — bare "lets fuck" omitted (matches inside "let's fucking go"); see hasOffTopicPhrase negative lookahead
   add('lets fuck a');
   add('let\'s fuck a');
-  add('lets fuck');
-  add('let\'s fuck');
   // common standalone vulgar off-topic
   add('fuck a fat');
   add('fuck fat');
@@ -1119,7 +1117,11 @@ function hasOffTopicPhrase(text) {
     return pc.length >= minCompact && compact.includes(pc);
   };
   if (OFF_TOPIC_EXTRA_PHRASES.some((phrase) => phraseMatches(phrase, 4))) return true;
-  return OFF_TOPIC_PHRASES.some((phrase) => phraseMatches(phrase, 6));
+  if (OFF_TOPIC_PHRASES.some((phrase) => phraseMatches(phrase, 6))) return true;
+  // Sexual "let's fuck" / "lets fuck" — not intensifier "let's fucking go", etc. (fuck(?!ing))
+  if (/\blet'?s fuck(?!ing\b)/i.test(lower) || /\blets fuck(?!ing\b)/i.test(lower)) return true;
+  if (/letsfuck(?!ing)/i.test(compact)) return true;
+  return false;
 }
 
 // Broad racial/religious stereotype generalizations (same redirect as vulgar off-topic). Runs before safe-context so it is not bypassed.
