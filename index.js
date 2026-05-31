@@ -169,6 +169,11 @@ const BLOCKED_MEDIA_IDS = (process.env.BLOCKED_MEDIA_IDS || '1749001747706566')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+// 4-file scam (attachments named 1–4.jpg/png): delete in any channel + strip roles → Court Jester only
+const FOUR_IMAGE_SCAM_BLOCK =
+  process.env.FOUR_IMAGE_SCAM_BLOCK !== '0' && process.env.FOUR_IMAGE_SCAM_BLOCK !== 'false';
+const COURT_JESTER_ROLE_ID = String(process.env.COURT_JESTER_ROLE_ID || '1322332947197464606');
+const FOUR_IMAGE_SCAM_NAME_RE = /^([1-4])\.(jpe?g|png)$/i;
 // RSS feed → Discord announcement channel (e.g. Gloria Victis news). If the site has no RSS, use a converter like https://rss.app/ with the news page URL.
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1482341063674036284';
 const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bRtM0TKZJF.xml'; // Gloria Victis | gamigo news (override with env if needed)
@@ -1987,6 +1992,43 @@ function messageHasBlockedMediaId(message) {
   return BLOCKED_MEDIA_IDS.some((id) => blob.includes(id));
 }
 
+/** True when message has exactly four attachments named 1–4 (.jpg/.jpeg/.png) — known multi-channel scam pattern. */
+function hasFourImageScamAttachments(message) {
+  const atts = message.attachments;
+  if (!atts || atts.size !== 4) return false;
+  const nums = new Set();
+  for (const a of atts.values()) {
+    const base = String(a.name || '').trim().replace(/\\/g, '/').split('/').pop().toLowerCase();
+    const m = base.match(FOUR_IMAGE_SCAM_NAME_RE);
+    if (!m) return false;
+    nums.add(m[1]);
+  }
+  return nums.size === 4;
+}
+
+/** Delete scam post and replace member roles with Court Jester only (no exemptions). */
+async function handleFourImageScam(message) {
+  try {
+    await message.delete();
+  } catch (err) {
+    console.error('[four-image-scam] delete failed:', err.message);
+  }
+  let member = message.member;
+  if (!member && message.guild) {
+    member = await message.guild.members.fetch(message.author.id).catch(() => null);
+  }
+  if (!member) {
+    console.error('[four-image-scam] could not resolve member for role punishment:', message.author.id);
+    return;
+  }
+  try {
+    await member.roles.set([COURT_JESTER_ROLE_ID], 'Uploaded blocked 4-image scam set (1–4 attachments)');
+    console.log(`[four-image-scam] ${message.author.tag} → Court Jester only (#${message.channelId})`);
+  } catch (err) {
+    console.error('[four-image-scam] Court Jester role punishment failed (check Manage Roles + role hierarchy):', err.message);
+  }
+}
+
 // gv-general only: watch one user — same text 3+ times, or too many messages in rolling window, or paste-wall → redirect;
 // DM (French) when ≥10 strikes in 5 min OR ≥50 strikes in 1 h; if DM fails, ping in #miaow (French).
 // Also: ≥N posts in M min in gv-general → delete each + repost to SPAM_WATCH_MIAOW_CHANNEL_ID (volume flush; defaults 20 / 20 min),
@@ -2946,6 +2988,9 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus education → author DM (hold fallback if DMs closed); <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
+  if (FOUR_IMAGE_SCAM_BLOCK) {
+    console.log(`4-image scam block: ON — attachments 1–4 (.jpg/.png) in any channel → delete + Court Jester <@&${COURT_JESTER_ROLE_ID}> only (FOUR_IMAGE_SCAM_BLOCK=0 to disable)`);
+  }
   console.log(`CSAM/grooming triggers: ${csamGroomingTriggers.length} lines → hold + TMFIAR + ${CSAM_ACK_EMOJI} ack (${CSAM_GROOMING_WORDS_FILE})`);
   console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
   console.log(`Welcome skip: accounts younger than ${WELCOME_MIN_ACCOUNT_AGE_DAYS} days (set WELCOME_MIN_ACCOUNT_AGE_DAYS=730 for 2 years)`);
@@ -3334,14 +3379,20 @@ client.on('messageCreate', async (message) => {
 
   if (await handleTempVoiceCommand(message)) return;
 
+  if (message.author.bot) return;
+
+  // 4-image scam (1.jpg–4.jpg/png): all channels, delete + Court Jester only — no exemptions
+  if (FOUR_IMAGE_SCAM_BLOCK && hasFourImageScamAttachments(message)) {
+    await handleFourImageScam(message);
+    return;
+  }
+
   const channelId = String(message.channelId);
 
   // Admin channel: ignore for welcome — we only welcome via guildMemberAdd (and role assign) so we never post on "Member left" from Carl-bot
   if (channelId === ADMIN_JOIN_CHANNEL_ID) {
     return; // don't run gv-general triggers for admin channel
   }
-
-  if (message.author.bot) return; // from here on we only react to user messages in gv-general
 
   // If someone engages with the watched user (reply, @mention, or reaction), forgive rolling spam counters.
   if (String(message.author.id) !== SPAM_WATCH_USER_ID && message.reference?.messageId) {
