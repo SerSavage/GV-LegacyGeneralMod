@@ -243,7 +243,12 @@ const SERVER_ROLES_CHANNEL_ID = process.env.SERVER_ROLES_CHANNEL_ID || '12527063
 const EMPEROR_MIAOW_ROLE_ID = process.env.EMPEROR_MIAOW_ROLE_ID || '1279896690517737515'; // Emperor of Miðland (pinged in reply)
 const MIAOW_TRIGGER_ROLE_ID = process.env.MIAOW_TRIGGER_ROLE_ID || '1167525339103248384'; // Miðland – only this role can trigger the "Where is Miaow?" reply
 const EMPEROR_MIAOW_DIR = path.join(process.cwd(), 'EmperorMiaow');
-const MIAOW_IMAGE_NAMES = ['MiaowMIA.png', 'miaow_1.png', 'miaow_2.png', 'miaow_3.png', 'miaow_4.png', 'miaow_5.png', 'miaow_6.png', 'miaow_7.png', 'miaow_8.png', 'miaow_9.png'];
+const MIAOW_IMAGE_NAMES = [
+  'MiaowMIA.png',
+  'miaow_1.png', 'miaow_2.png', 'miaow_3.png', 'miaow_4.png', 'miaow_5.png',
+  'miaow_6.png', 'miaow_7.png', 'miaow_8.png', 'miaow_9.png',
+  'MiaowMissingNew1.png', 'MiaowMissingNew2.png', 'MiaowMissingNew3.png', 'MiaowMissingNew4.png',
+];
 function getRandomMiaowImage() {
   const existing = MIAOW_IMAGE_NAMES.map(name => path.join(EMPEROR_MIAOW_DIR, name)).filter(p => fs.existsSync(p));
   return existing.length ? existing[Math.floor(Math.random() * existing.length)] : null;
