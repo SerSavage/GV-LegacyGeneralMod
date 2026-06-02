@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const http = require('http');
 const dns = require('dns');
 const Parser = require('rss-parser');
@@ -169,11 +170,43 @@ const BLOCKED_MEDIA_IDS = (process.env.BLOCKED_MEDIA_IDS || '1749001747706566')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-// 4-file scam (attachments named 1–4.jpg/png): delete in any channel + strip roles → Court Jester only
+// 4-file scam: delete in any channel + strip roles → Court Jester only (numbered 1–4, four× image.jpg, or known SHA256 set)
 const FOUR_IMAGE_SCAM_BLOCK =
   process.env.FOUR_IMAGE_SCAM_BLOCK !== '0' && process.env.FOUR_IMAGE_SCAM_BLOCK !== 'false';
 const COURT_JESTER_ROLE_ID = String(process.env.COURT_JESTER_ROLE_ID || '1322332947197464606');
 const FOUR_IMAGE_SCAM_NAME_RE = /^([1-4])\.(jpe?g|png)$/i;
+const FOUR_IMAGE_SCAM_DUPLICATE_NAME = 'image.jpg';
+const FOUR_IMAGE_SCAM_HASH_MAX_BYTES = Math.max(
+  512 * 1024,
+  parseInt(process.env.FOUR_IMAGE_SCAM_HASH_MAX_BYTES || String(12 * 1024 * 1024), 10),
+);
+const FOUR_IMAGE_SCAM_HASHES_FILE = path.join(process.cwd(), 'assets', 'four-image-scam-hashes.json');
+
+function loadFourImageScamHashSets() {
+  const sets = [];
+  try {
+    if (fs.existsSync(FOUR_IMAGE_SCAM_HASHES_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(FOUR_IMAGE_SCAM_HASHES_FILE, 'utf8'));
+      for (const entry of raw.sets || []) {
+        const hashes = (entry.hashes || []).map((h) => String(h).trim().toLowerCase()).filter(Boolean);
+        if (hashes.length === 4) sets.push({ id: entry.id || 'file', label: entry.label || entry.id, hashes });
+      }
+    }
+  } catch (err) {
+    console.warn('four-image-scam-hashes.json load failed:', err.message);
+  }
+  const extra = String(process.env.FOUR_IMAGE_SCAM_HASH_SET || '')
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const block of extra) {
+    const hashes = block.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+    if (hashes.length === 4) sets.push({ id: 'env', label: 'env', hashes });
+  }
+  return sets;
+}
+
+const FOUR_IMAGE_SCAM_HASH_SETS = loadFourImageScamHashSets();
 // RSS feed → Discord announcement channel (e.g. Gloria Victis news). If the site has no RSS, use a converter like https://rss.app/ with the news page URL.
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID || '1482341063674036284';
 const RSS_FEED_URL = process.env.RSS_FEED_URL || 'https://rss.app/feeds/570E40bRtM0TKZJF.xml'; // Gloria Victis | gamigo news (override with env if needed)
@@ -1992,22 +2025,88 @@ function messageHasBlockedMediaId(message) {
   return BLOCKED_MEDIA_IDS.some((id) => blob.includes(id));
 }
 
-/** True when message has exactly four attachments named 1–4 (.jpg/.jpeg/.png) — known multi-channel scam pattern. */
-function hasFourImageScamAttachments(message) {
+function attachmentBasename(name) {
+  return String(name || '').trim().replace(/\\/g, '/').split('/').pop().toLowerCase();
+}
+
+function sortedHashMultiset(hashes) {
+  return [...hashes].map((h) => h.toLowerCase()).sort();
+}
+
+function hashMultisetMatchesKnown(messageHashes, knownHashes) {
+  if (messageHashes.length !== 4 || knownHashes.length !== 4) return false;
+  const a = sortedHashMultiset(messageHashes);
+  const b = sortedHashMultiset(knownHashes);
+  return a.every((h, i) => h === b[i]);
+}
+
+/** Filename: exactly four attachments named 1.jpg … 4.jpg (or .png). */
+function fourImageScamFilenameNumbered(message) {
   const atts = message.attachments;
   if (!atts || atts.size !== 4) return false;
   const nums = new Set();
   for (const a of atts.values()) {
-    const base = String(a.name || '').trim().replace(/\\/g, '/').split('/').pop().toLowerCase();
-    const m = base.match(FOUR_IMAGE_SCAM_NAME_RE);
+    const m = attachmentBasename(a.name).match(FOUR_IMAGE_SCAM_NAME_RE);
     if (!m) return false;
     nums.add(m[1]);
   }
   return nums.size === 4;
 }
 
+/** Filename: exactly four attachments, each named image.jpg (Discord duplicate names). */
+function fourImageScamFilenameDuplicateImage(message) {
+  const atts = message.attachments;
+  if (!atts || atts.size !== 4) return false;
+  for (const a of atts.values()) {
+    if (attachmentBasename(a.name) !== FOUR_IMAGE_SCAM_DUPLICATE_NAME) return false;
+  }
+  return true;
+}
+
+function detectFourImageScamFilenames(message) {
+  if (fourImageScamFilenameNumbered(message)) return 'numbered-1-4';
+  if (fourImageScamFilenameDuplicateImage(message)) return 'four-image-jpg';
+  return null;
+}
+
+async function sha256FromAttachmentUrl(url) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'DiscordBot (GV-LegacyGeneralMod)' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+/** Content hash: four attachments whose SHA256 multiset matches a known scam set. */
+async function detectFourImageScamHashes(message) {
+  if (!FOUR_IMAGE_SCAM_HASH_SETS.length) return null;
+  const atts = message.attachments;
+  if (!atts || atts.size !== 4) return null;
+  const hashes = [];
+  for (const a of atts.values()) {
+    if (a.size && a.size > FOUR_IMAGE_SCAM_HASH_MAX_BYTES) return null;
+    try {
+      hashes.push(await sha256FromAttachmentUrl(a.url));
+    } catch (err) {
+      if (DEBUG) console.warn('[four-image-scam] hash download failed:', err.message);
+      return null;
+    }
+  }
+  for (const set of FOUR_IMAGE_SCAM_HASH_SETS) {
+    if (hashMultisetMatchesKnown(hashes, set.hashes)) return `hash:${set.id}`;
+  }
+  return null;
+}
+
+/** Numbered names, four× image.jpg, or known 4-image hash set. */
+async function detectFourImageScam(message) {
+  if (!message.attachments || message.attachments.size !== 4) return null;
+  const byName = detectFourImageScamFilenames(message);
+  if (byName) return byName;
+  return detectFourImageScamHashes(message);
+}
+
 /** Delete scam post and replace member roles with Court Jester only (no exemptions). */
-async function handleFourImageScam(message) {
+async function handleFourImageScam(message, reason) {
   try {
     await message.delete();
   } catch (err) {
@@ -2022,8 +2121,11 @@ async function handleFourImageScam(message) {
     return;
   }
   try {
-    await member.roles.set([COURT_JESTER_ROLE_ID], 'Uploaded blocked 4-image scam set (1–4 attachments)');
-    console.log(`[four-image-scam] ${message.author.tag} → Court Jester only (#${message.channelId})`);
+    await member.roles.set(
+      [COURT_JESTER_ROLE_ID],
+      `Uploaded blocked 4-image scam (${reason || 'unknown'})`,
+    );
+    console.log(`[four-image-scam] ${message.author.tag} → Court Jester only (${reason}, #${message.channelId})`);
   } catch (err) {
     console.error('[four-image-scam] Court Jester role punishment failed (check Manage Roles + role hierarchy):', err.message);
   }
@@ -2989,7 +3091,9 @@ client.once('ready', () => {
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus education → author DM (hold fallback if DMs closed); <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
   if (FOUR_IMAGE_SCAM_BLOCK) {
-    console.log(`4-image scam block: ON — attachments 1–4 (.jpg/.png) in any channel → delete + Court Jester <@&${COURT_JESTER_ROLE_ID}> only (FOUR_IMAGE_SCAM_BLOCK=0 to disable)`);
+    console.log(
+      `4-image scam block: ON — 1–4.jpg/png OR four× image.jpg OR ${FOUR_IMAGE_SCAM_HASH_SETS.length} hash set(s) → delete + Court Jester <@&${COURT_JESTER_ROLE_ID}> only`,
+    );
   }
   console.log(`CSAM/grooming triggers: ${csamGroomingTriggers.length} lines → hold + TMFIAR + ${CSAM_ACK_EMOJI} ack (${CSAM_GROOMING_WORDS_FILE})`);
   console.log(`Welcomes in #new-arrivals (guildMemberAdd + first role); admin channel ignored for welcome`);
@@ -3381,10 +3485,13 @@ client.on('messageCreate', async (message) => {
 
   if (message.author.bot) return;
 
-  // 4-image scam (1.jpg–4.jpg/png): all channels, delete + Court Jester only — no exemptions
-  if (FOUR_IMAGE_SCAM_BLOCK && hasFourImageScamAttachments(message)) {
-    await handleFourImageScam(message);
-    return;
+  // 4-image scam: all channels, delete + Court Jester only — no exemptions
+  if (FOUR_IMAGE_SCAM_BLOCK) {
+    const scamReason = await detectFourImageScam(message);
+    if (scamReason) {
+      await handleFourImageScam(message, scamReason);
+      return;
+    }
   }
 
   const channelId = String(message.channelId);

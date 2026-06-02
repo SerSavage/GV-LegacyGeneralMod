@@ -1,0 +1,14 @@
+{
+  "sets": [
+    {
+      "id": "four-duplicate-image-jpg",
+      "label": "Four attachments all named image.jpg (helmet_face scam)",
+      "hashes": [
+        "1ead36eb124ebd6da4d4eeff4bd4297ad5a58d4c8ba28f9dcabd78e2164891b9",
+        "64b76198312c0116951fc9f858ca87e0a399b558212af14448b9ada220a7893a",
+        "6f240c5e973c897f9801bc62f347a521efa893b7905c91645937f5a60d673d29",
+        "c33b7ffa825f279c1ae97a6680d11a4d31ba3221235da21d8429c71a88790796"
+      ]
+    }
+  ]
+}
