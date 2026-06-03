@@ -176,6 +176,11 @@ const FOUR_IMAGE_SCAM_BLOCK =
 const COURT_JESTER_ROLE_ID = String(process.env.COURT_JESTER_ROLE_ID || '1322332947197464606');
 const FOUR_IMAGE_SCAM_NAME_RE = /^([1-4])\.(jpe?g|png)$/i;
 const FOUR_IMAGE_SCAM_DUPLICATE_NAME = 'image.jpg';
+/** Minimum attachments for four× image.jpg or hash-subset match (scammers sometimes post only 2). Numbered 1–4 still requires exactly 4. */
+const FOUR_IMAGE_SCAM_MIN_DUPLICATE_ATTACHMENTS = Math.max(
+  2,
+  parseInt(process.env.FOUR_IMAGE_SCAM_MIN_DUPLICATE_ATTACHMENTS || '2', 10),
+);
 const FOUR_IMAGE_SCAM_HASH_MAX_BYTES = Math.max(
   512 * 1024,
   parseInt(process.env.FOUR_IMAGE_SCAM_HASH_MAX_BYTES || String(12 * 1024 * 1024), 10),
@@ -2058,10 +2063,10 @@ function fourImageScamFilenameNumbered(message) {
   return nums.size === 4;
 }
 
-/** Filename: exactly four attachments, each named image.jpg (Discord duplicate names). */
+/** Filename: ≥2 attachments, each named image.jpg (Discord duplicate names). */
 function fourImageScamFilenameDuplicateImage(message) {
   const atts = message.attachments;
-  if (!atts || atts.size !== 4) return false;
+  if (!atts || atts.size < FOUR_IMAGE_SCAM_MIN_DUPLICATE_ATTACHMENTS) return false;
   for (const a of atts.values()) {
     if (attachmentBasename(a.name) !== FOUR_IMAGE_SCAM_DUPLICATE_NAME) return false;
   }
@@ -2081,11 +2086,11 @@ async function sha256FromAttachmentUrl(url) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-/** Content hash: four attachments whose SHA256 multiset matches a known scam set. */
+/** Content hash: full 4-set match, or ≥2 attachments whose hashes are all from a known scam set. */
 async function detectFourImageScamHashes(message) {
   if (!FOUR_IMAGE_SCAM_HASH_SETS.length) return null;
   const atts = message.attachments;
-  if (!atts || atts.size !== 4) return null;
+  if (!atts || atts.size < FOUR_IMAGE_SCAM_MIN_DUPLICATE_ATTACHMENTS) return null;
   const hashes = [];
   for (const a of atts.values()) {
     if (a.size && a.size > FOUR_IMAGE_SCAM_HASH_MAX_BYTES) return null;
@@ -2097,25 +2102,58 @@ async function detectFourImageScamHashes(message) {
     }
   }
   for (const set of FOUR_IMAGE_SCAM_HASH_SETS) {
-    if (hashMultisetMatchesKnown(hashes, set.hashes)) return `hash:${set.id}`;
+    if (hashes.length === 4 && hashMultisetMatchesKnown(hashes, set.hashes)) return `hash:${set.id}`;
+    const knownSet = new Set(set.hashes);
+    if (hashes.every((h) => knownSet.has(h))) return `hash-subset:${set.id}`;
   }
   return null;
 }
 
-/** Numbered names, four× image.jpg, or known 4-image hash set. */
+/** Numbered names (4 only), four× image.jpg (≥2), or known hash set. */
 async function detectFourImageScam(message) {
-  if (!message.attachments || message.attachments.size !== 4) return null;
+  if (!message.attachments?.size) return null;
   const byName = detectFourImageScamFilenames(message);
   if (byName) return byName;
   return detectFourImageScamHashes(message);
 }
 
+/** Delete message with fetch/retry (Manage Messages required in that channel). */
+async function deleteMessageRobust(message) {
+  const channelId = message.channelId;
+  const messageId = message.id;
+  const tryDelete = async (msg) => {
+    if (!msg?.deletable) return false;
+    await msg.delete();
+    return true;
+  };
+  try {
+    if (await tryDelete(message)) return true;
+  } catch (err) {
+    if (DEBUG) console.warn('[four-image-scam] delete attempt 1:', err.message);
+  }
+  try {
+    const ch = message.channel?.isTextBased()
+      ? message.channel
+      : await message.client.channels.fetch(channelId);
+    if (!ch?.isTextBased()) return false;
+    const fresh = await ch.messages.fetch(messageId);
+    if (await tryDelete(fresh)) return true;
+  } catch (err) {
+    console.error(
+      `[four-image-scam] delete failed for ${messageId} in #${channelId} — grant Manage Messages in that channel:`,
+      err.message,
+    );
+  }
+  return false;
+}
+
 /** Delete scam post and replace member roles with Court Jester only (no exemptions). */
 async function handleFourImageScam(message, reason) {
-  try {
-    await message.delete();
-  } catch (err) {
-    console.error('[four-image-scam] delete failed:', err.message);
+  const deleted = await deleteMessageRobust(message);
+  if (!deleted) {
+    console.error(
+      `[four-image-scam] message ${message.id} still visible in #${message.channelId} — bot needs Manage Messages there`,
+    );
   }
   let member = message.member;
   if (!member && message.guild) {
@@ -2134,6 +2172,29 @@ async function handleFourImageScam(message, reason) {
   } catch (err) {
     console.error('[four-image-scam] Court Jester role punishment failed (check Manage Roles + role hierarchy):', err.message);
   }
+}
+
+/** Re-check when Discord may add more image.jpg attachments after the first messageCreate. */
+function scheduleFourImageScamAttachmentRecheck(message) {
+  const atts = message.attachments;
+  if (!atts?.size || atts.size >= 4) return;
+  for (const a of atts.values()) {
+    if (attachmentBasename(a.name) !== FOUR_IMAGE_SCAM_DUPLICATE_NAME) return;
+  }
+  const { client, channelId, id: messageId, author } = message;
+  setTimeout(async () => {
+    try {
+      if (!FOUR_IMAGE_SCAM_BLOCK) return;
+      const ch = await client.channels.fetch(channelId);
+      if (!ch?.isTextBased()) return;
+      const fresh = await ch.messages.fetch(messageId);
+      if (fresh.author.id !== author.id) return;
+      const reason = await detectFourImageScam(fresh);
+      if (reason) await handleFourImageScam(fresh, `${reason}-recheck`);
+    } catch (err) {
+      if (err?.code !== 10008 && DEBUG) console.warn('[four-image-scam] attachment recheck:', err.message);
+    }
+  }, 2000);
 }
 
 // gv-general only: watch one user — same text 3+ times, or too many messages in rolling window, or paste-wall → redirect;
@@ -3097,7 +3158,7 @@ client.once('ready', () => {
   console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus education → author DM (hold fallback if DMs closed); <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
   if (FOUR_IMAGE_SCAM_BLOCK) {
     console.log(
-      `4-image scam block: ON — 1–4.jpg/png OR four× image.jpg OR ${FOUR_IMAGE_SCAM_HASH_SETS.length} hash set(s) → delete + Court Jester <@&${COURT_JESTER_ROLE_ID}> only`,
+      `4-image scam block: ON — 1–4.jpg/png (×4) OR ≥${FOUR_IMAGE_SCAM_MIN_DUPLICATE_ATTACHMENTS}× image.jpg OR hash set(s) → delete + Court Jester <@&${COURT_JESTER_ROLE_ID}> (Manage Messages per channel)`,
     );
   }
   console.log(`CSAM/grooming triggers: ${csamGroomingTriggers.length} lines → hold + TMFIAR + ${CSAM_ACK_EMOJI} ack (${CSAM_GROOMING_WORDS_FILE})`);
@@ -3497,6 +3558,7 @@ client.on('messageCreate', async (message) => {
       await handleFourImageScam(message, scamReason);
       return;
     }
+    scheduleFourImageScamAttachmentRecheck(message);
   }
 
   const channelId = String(message.channelId);
@@ -3782,6 +3844,22 @@ client.on('messageCreate', async (message) => {
   // Religion/politics/ideological: random GIF. Delete in gv-general, repost to hold channel.
   const randomGif = TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
   await deleteInGeneralAndForwardMovedHold(message, randomGif);
+});
+
+// Scam posts sometimes gain attachments after the first messageCreate — re-scan on update.
+client.on('messageUpdate', async (oldMessage, newMessage) => {
+  if (!newMessage.guild || newMessage.author?.bot || !FOUR_IMAGE_SCAM_BLOCK) return;
+  try {
+    if (newMessage.partial) await newMessage.fetch();
+    if (oldMessage.partial) await oldMessage.fetch().catch(() => null);
+  } catch {
+    return;
+  }
+  const oldN = oldMessage.attachments?.size || 0;
+  const newN = newMessage.attachments?.size || 0;
+  if (newN <= oldN) return;
+  const reason = await detectFourImageScam(newMessage);
+  if (reason) await handleFourImageScam(newMessage, reason);
 });
 
 client.on('messageReactionAdd', async (reaction, user) => {
