@@ -3164,6 +3164,10 @@ client.once('ready', () => {
   botReadyAt = Date.now();
   console.log(`Logged in as ${client.user.tag}`);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
+  const miaowImageCount = MIAOW_IMAGE_NAMES.map((name) => path.join(EMPEROR_MIAOW_DIR, name)).filter((p) => fs.existsSync(p)).length;
+  console.log(
+    `Miaow replies: #gv-general + threads; author needs role ${MIAOW_TRIGGER_ROLE_ID} (Miðland); ping ${EMPEROR_MIAOW_ROLE_ID}; ${miaowImageCount} image(s) in EmperorMiaow/`,
+  );
   console.log(`Moved-from-general posts → <#${MOVED_BY_BOT_CHANNEL_ID}>; Chronicus education → author DM (hold fallback if DMs closed); <#${REDIRECT_CHANNEL_ID}> (off-topic)`);
   if (FOUR_IMAGE_SCAM_BLOCK) {
     console.log(
