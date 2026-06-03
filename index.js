@@ -1866,9 +1866,18 @@ const MIAOW_WHERE_PHRASES = [
 ].map(p => p.toLowerCase());
 function hasMiaowWhereTrigger(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase().trim();
+  const lower = stripDiacritics(text.toLowerCase()).trim();
   if (!lower.includes('miaow')) return false;
   return MIAOW_WHERE_PHRASES.some(phrase => lower.includes(phrase));
+}
+
+/** Miðland role check — fetch member when guild member cache is tiny (GUILD_MEMBER_CACHE_MAX_SIZE). */
+async function memberHasMiaowTriggerRole(message) {
+  let member = message.member;
+  if (!member && message.guild) {
+    member = await message.guild.members.fetch(message.author.id).catch(() => null);
+  }
+  return Boolean(member?.roles?.cache?.has(MIAOW_TRIGGER_ROLE_ID));
 }
 
 // Get video attachment or URL for spam reply (returns { files } or { content } for message.reply). Prefer local file when present so Discord embeds inline.
@@ -3649,9 +3658,9 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  if (channelId !== TRIGGER_CHANNEL_ID) {
-    if (DEBUG) console.log(`[skip] channel ${channelId} !== ${TRIGGER_CHANNEL_ID}`);
-    return; // only gv-general
+  if (!isMessageInGvGeneral(message)) {
+    if (DEBUG) console.log(`[skip] not gv-general (channel ${channelId})`);
+    return; // gv-general + threads under it only
   }
 
   const rawGvContent = message.content ? String(message.content) : '';
@@ -3740,9 +3749,9 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // "Where is Miaow?" / "Miaow is missing?" – reply with Emperor of Miðland role ping + random Miaow image (only when author has Miðland role)
+  // "Where is Miaow?" / "Miaow is missing!" – reply with Emperor role ping + random Miaow image (author must have Miðland role)
   if (hasMiaowWhereTrigger(gvModerationText)) {
-    const hasTriggerRole = message.member?.roles?.cache?.has(MIAOW_TRIGGER_ROLE_ID);
+    const hasTriggerRole = await memberHasMiaowTriggerRole(message);
     if (hasTriggerRole) {
       try {
         const roleMention = `<@&${EMPEROR_MIAOW_ROLE_ID}>`;
@@ -3756,8 +3765,10 @@ client.on('messageCreate', async (message) => {
       } catch (err) {
         console.error('Miaow reply failed:', err.message);
       }
-    } else if (DEBUG) {
-      console.log('[miaow] Skipped – author does not have Miðland role');
+    } else {
+      console.warn(
+        `[miaow] Phrase matched but no Miðland role for ${message.author.tag} (${message.author.id}) — check MIAOW_TRIGGER_ROLE_ID=${MIAOW_TRIGGER_ROLE_ID}`,
+      );
     }
     return;
   }
