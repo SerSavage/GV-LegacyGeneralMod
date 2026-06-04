@@ -1413,15 +1413,26 @@ function hasGoyTerm(text) {
   return GOY_TERMS.some((term) => new RegExp(`\\b${escapeRegex(term)}\\b`, 'i').test(lower));
 }
 
-// Tenor GIF IDs that are allowed in gv-general even if the URL slug contains trigger words (e.g. trump-kittens = cats, not politics)
-const SAFE_TENOR_GIF_IDS = new Set(['5449274500905931814']); // trump-kittens us-army special-ops (kittens/cats content)
-function messageContainsSafeTenorLink(content) {
-  if (!content || typeof content !== 'string') return false;
-  if (!content.includes('tenor.com')) return false;
-  for (const id of SAFE_TENOR_GIF_IDS) {
-    if (content.includes(id)) return true;
+// Any Tenor link Discord embeds (slug can contain false positives e.g. "jeremiah-johnson" → leader "johnson").
+const TENOR_URL_RE = /https?:\/\/(?:www\.)?tenor\.com\/|https?:\/\/tenor\.googleapis\.com\//i;
+function collectTenorLinkBlob(messageOrText) {
+  const parts = [];
+  if (typeof messageOrText === 'string') {
+    parts.push(messageOrText);
+  } else if (messageOrText) {
+    if (messageOrText.content) parts.push(String(messageOrText.content));
+    for (const e of messageOrText.embeds || []) {
+      if (e.url) parts.push(e.url);
+      if (e.thumbnail?.url) parts.push(e.thumbnail.url);
+      if (e.image?.url) parts.push(e.image.url);
+      if (e.video?.url) parts.push(e.video.url);
+    }
   }
-  return false;
+  return parts.join(' ');
+}
+function messageHasTenorLink(messageOrText) {
+  const blob = collectTenorLinkBlob(messageOrText);
+  return Boolean(blob && TENOR_URL_RE.test(blob));
 }
 
 // Political countries and leaders – count as trigger words for religion/politics filter (e.g. "Pakistan Iran Israel are states")
@@ -2025,9 +2036,10 @@ async function downloadUrlToFile(url, filePath) {
   return filePath;
 }
 
-/** True if message text/embeds/attachments reference a blocked Tenor/GIF id (substring match). */
+/** True if message text/embeds/attachments reference a blocked Tenor/GIF id (substring match). Tenor view links are always allowed. */
 function messageHasBlockedMediaId(message) {
   if (!BLOCKED_MEDIA_IDS.length) return false;
+  if (messageHasTenorLink(message)) return false;
   const parts = [];
   if (message.content) parts.push(message.content);
   for (const e of message.embeds || []) {
@@ -3845,9 +3857,9 @@ client.on('messageCreate', async (message) => {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
     return;
   }
-  if (messageContainsSafeTenorLink(gvModerationText)) {
-    if (DEBUG) console.log('[skip] message contains safe tenor GIF (e.g. kittens)');
-    return; // whitelisted tenor link – don't trigger religion/politics
+  if (messageHasTenorLink(message)) {
+    if (DEBUG) console.log('[skip] Tenor GIF link — allowed in gv-general');
+    return;
   }
 
   // Religion/politics/goy: trigger if ≥80% filter words OR ideological phrases OR obvious religion/politics phrases
