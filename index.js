@@ -1366,8 +1366,8 @@ const GEOPOLITICAL_HARD_SUBSTRINGS = [
   'iran', 'iraq', 'israel', 'gaza', 'palestine',
 ].map(s => s.toLowerCase());
 
-/** UN / U.N. without matching Spanish article "un" alone */
-const GEOPOLITICAL_UN_RE = /\b(?:the\s+)?u\.?\s*n\.?\b|\bunited\s+nations\b|\bun\s+security\b|\bun\s+general\b|\bun\s+council\b|\bun\s+vote\b|\bun\s+resolution\b|\bun\s+peacekeeping\b/i;
+/** UN / U.N. — require dotted form or UN acronym; do not match French/Spanish article "un" in slugs like oui-un-peu. */
+const GEOPOLITICAL_UN_RE = /\b(?:the\s+)?u\.n\.|\bUN\b|\bunited\s+nations\b|\bun\s+security\b|\bun\s+general\b|\bun\s+council\b|\bun\s+vote\b|\bun\s+resolution\b|\bun\s+peacekeeping\b/i;
 
 function hasGeopoliticalHardRedirect(text) {
   if (!text || typeof text !== 'string') return false;
@@ -1413,8 +1413,8 @@ function hasGoyTerm(text) {
   return GOY_TERMS.some((term) => new RegExp(`\\b${escapeRegex(term)}\\b`, 'i').test(lower));
 }
 
-// Any Tenor link Discord embeds (slug can contain false positives e.g. "jeremiah-johnson" → leader "johnson").
-const TENOR_URL_RE = /https?:\/\/(?:www\.)?tenor\.com\/|https?:\/\/tenor\.googleapis\.com\//i;
+// Any Tenor link Discord embeds (any language slug; CDN hosts media1.tenor.com, etc.).
+const TENOR_URL_RE = /https?:\/\/(?:[\w-]+\.)*tenor\.com(?:\/|$)|https?:\/\/tenor\.googleapis\.com\//i;
 function collectTenorLinkBlob(messageOrText) {
   const parts = [];
   if (typeof messageOrText === 'string') {
@@ -1423,6 +1423,7 @@ function collectTenorLinkBlob(messageOrText) {
     if (messageOrText.content) parts.push(String(messageOrText.content));
     for (const e of messageOrText.embeds || []) {
       if (e.url) parts.push(e.url);
+      if (e.provider?.url) parts.push(e.provider.url);
       if (e.thumbnail?.url) parts.push(e.thumbnail.url);
       if (e.image?.url) parts.push(e.image.url);
       if (e.video?.url) parts.push(e.video.url);
@@ -1432,7 +1433,14 @@ function collectTenorLinkBlob(messageOrText) {
 }
 function messageHasTenorLink(messageOrText) {
   const blob = collectTenorLinkBlob(messageOrText);
-  return Boolean(blob && TENOR_URL_RE.test(blob));
+  if (!blob) return false;
+  let decoded = blob;
+  try {
+    decoded = decodeURIComponent(blob);
+  } catch {
+    decoded = blob;
+  }
+  return TENOR_URL_RE.test(blob) || TENOR_URL_RE.test(decoded);
 }
 
 // Political countries and leaders – count as trigger words for religion/politics filter (e.g. "Pakistan Iran Israel are states")
@@ -3700,7 +3708,7 @@ client.on('messageCreate', async (message) => {
   // Before empty-content skip: watched user attachment/sticker spam must still hit handleSpamWatchUser.
   if (await handleSpamWatchUser(message)) return;
 
-  if (!message.content) {
+  if (!message.content && !messageHasTenorLink(message)) {
     if (DEBUG) console.log('[skip] empty content (enable Message Content Intent in Discord Developer Portal → Bot)');
     return;
   }
@@ -3721,6 +3729,12 @@ client.on('messageCreate', async (message) => {
     const videoPayload = getSpamVideoPayload();
     const gifOrVideoPayload = repeated ? videoPayload : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload);
+    return;
+  }
+
+  // Any Tenor GIF (any language slug / CDN URL) — skip English-centric holds below (geo, off-topic, religion/politics).
+  if (messageHasTenorLink(message)) {
+    if (DEBUG) console.log('[skip] Tenor GIF link — allowed in gv-general');
     return;
   }
 
@@ -3855,10 +3869,6 @@ client.on('messageCreate', async (message) => {
   // Off-topic phrases (vulgar/body/gender/race): Mace Windu GIF. Delete in gv-general, repost to hold channel.
   if (hasOffTopicPhrase(gvModerationText)) {
     await deleteInGeneralAndForwardMovedHold(message, OFF_TOPIC_GIF);
-    return;
-  }
-  if (messageHasTenorLink(message)) {
-    if (DEBUG) console.log('[skip] Tenor GIF link — allowed in gv-general');
     return;
   }
 
