@@ -1366,8 +1366,9 @@ const GEOPOLITICAL_HARD_SUBSTRINGS = [
   'iran', 'iraq', 'israel', 'gaza', 'palestine',
 ].map(s => s.toLowerCase());
 
-/** UN / U.N. — require dotted form or UN acronym; do not match French/Spanish article "un" in slugs like oui-un-peu. */
-const GEOPOLITICAL_UN_RE = /\b(?:the\s+)?u\.n\.|\bUN\b|\bunited\s+nations\b|\bun\s+security\b|\bun\s+general\b|\bun\s+council\b|\bun\s+vote\b|\bun\s+resolution\b|\bun\s+peacekeeping\b/i;
+/** UN / U.N. — dotted u.n., uppercase UN, or "un + institution" phrases; not French article "un" in oui-un-peu. */
+const GEOPOLITICAL_UN_RE = /\b(?:the\s+)?u\.n\.|\bunited\s+nations\b|\bun\s+security\b|\bun\s+general\b|\bun\s+council\b|\bun\s+vote\b|\bun\s+resolution\b|\bun\s+peacekeeping\b/i;
+const GEOPOLITICAL_UN_ACRONYM_RE = /\bUN\b/;
 
 function hasGeopoliticalHardRedirect(text) {
   if (!text || typeof text !== 'string') return false;
@@ -1386,6 +1387,7 @@ function hasGeopoliticalHardRedirect(text) {
   if (/\bsanction/i.test(text)) return true;
   if (/\bstates\b/.test(lower)) return true;
   if (GEOPOLITICAL_UN_RE.test(text)) return true;
+  if (GEOPOLITICAL_UN_ACRONYM_RE.test(text)) return true;
   return false;
 }
 
