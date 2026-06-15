@@ -123,6 +123,12 @@ armed mode
 unarmed mode
 skillbar
 attribute points
+constitution
+strength
+dexterity
+agility
+vitality
+endurance
 experience bar
 purse icon
 limestone

@@ -689,6 +689,8 @@ const SAFE_CONTEXT_BASE = [
   'forefather', 'greatfather', 'khagan', 'zenith',
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
   'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
+  // Character attributes (words.txt may list "constitution" as political; standalone stat posts are game talk).
+  'constitution', 'strength', 'dexterity', 'agility', 'vitality', 'endurance',
   // Gloria Victis wikis (https://wiki.gloriavictisgame.com/ + Fandom) — base terms; deeper curated phrases live in safe-context.txt
   'character statistics', 'fast travel', 'mounts', 'player stalls', 'gathering resources', 'barn manager',
   'renovation kit', 'frontier guard', 'guild levels', 'feudal system', 'patronus nobilis', 'leveling guide',
@@ -1788,6 +1790,7 @@ function hasGameplayCombatContext(text) {
     || /\b(hit|hits|behind|pvp|combat|duel|fight|fighting|siege|loot|looting)\b/i.test(lower)
     || /\b(party|parties|alliance|alliances|guild|guilds|nation|nations)\b/i.test(lower)
     || /\b(glory|reputation|tier\s*[0-9]|non-targeting|character|stats)\b/i.test(lower)
+    || /\b(constitution|strength|dexterity|agility|vitality|endurance|attribute|attributes)\b/i.test(lower)
     || /\bgloria\s+victis\b|\bgv\b/i.test(lower)
   );
 }
@@ -1829,8 +1832,15 @@ const REGION_OR_SERVER_ZONE_WORDS = new Set([
 // Never count these as religion/politics trigger words (common words / game terms that match leaders or lists by substring)
 // nation / nations — GV faction chat ("nation chat", "which nation"); words.txt lists bare "nation" as political otherwise.
 // danger / dangerous — common in GV (NPCs, nations, combat); not political by themselves (see hasGameDangerLoreContext).
+// constitution / strength / dexterity — GV character attributes; words.txt may list "constitution" as political otherwise.
+const GV_CHARACTER_STAT_WORDS = [
+  'constitution', 'strength', 'dexterity', 'agility', 'vitality', 'endurance',
+  'intelligence', 'wisdom', 'charisma', 'stamina', 'willpower',
+  'attribute', 'attributes',
+].map((w) => w.toLowerCase());
 const TRIGGER_WORD_IGNORE = new Set([
   ...['good', 'goods', 'mod', 'mods', 'nation', 'nations', 'danger', 'dangerous'].map((w) => w.toLowerCase()),
+  ...GV_CHARACTER_STAT_WORDS,
   ...REGION_OR_SERVER_ZONE_WORDS,
 ]);
 function wordMatchesTriggerWord(word) {
