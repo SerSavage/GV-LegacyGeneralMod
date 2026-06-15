@@ -19,6 +19,22 @@ try {
 }
 
 // --- Channel IDs ---
+// Main Gloria Victis Discord guild (GV-only welcomes, Miaow, spam-watch, gv-general moderation).
+const GV_MAIN_GUILD_ID = String(process.env.GV_MAIN_GUILD_ID || '1166738416654897203');
+// Midland Nation EU — separate guild: delete + warn DM + offense log (no Chronicus/hold repost).
+const MIDLAND_EU_GUILD_ID = String(process.env.MIDLAND_EU_GUILD_ID || '').trim();
+const MIDLAND_EU_MOD_CHANNEL_IDS = new Set(
+  String(process.env.MIDLAND_EU_MOD_CHANNEL_IDS || '1045054231004053564,1097987852358406204')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+const MIDLAND_EU_OFFENSE_LOG_CHANNEL_ID = String(
+  process.env.MIDLAND_EU_OFFENSE_LOG_CHANNEL_ID || '1516103168940048444',
+);
+const MIDLAND_EU_WARN_DM =
+  process.env.MIDLAND_EU_WARN_DM || "Don't be too toxic now. I'm watching you, mate.";
+const MIDLAND_EU_ENABLED = Boolean(MIDLAND_EU_GUILD_ID && MIDLAND_EU_MOD_CHANNEL_IDS.size > 0);
 // Trigger channel = gv-general (bot listens here for slurs, off-topic, religion/politics, Soon).
 const TRIGGER_CHANNEL_ID = String(process.env.TRIGGER_CHANNEL_ID || '1166738417539887218');
 const GV_GENERAL_CHANNEL_ID = String(process.env.GV_GENERAL_CHANNEL_ID || TRIGGER_CHANNEL_ID); // trigger channel (slurs, Soon, etc.) and Chronicus meme target
@@ -2319,7 +2335,29 @@ async function fetchSpamWatchReferencedMessage(message) {
 }
 
 /** True if the message lives in gv-general (including threads under that channel). */
+function isGvMainGuild(guildId) {
+  return String(guildId) === GV_MAIN_GUILD_ID;
+}
+
+function isMidlandEuGuild(guildId) {
+  return MIDLAND_EU_ENABLED && String(guildId) === MIDLAND_EU_GUILD_ID;
+}
+
+/** #nation-discussion, listed thread IDs, and any thread whose parent is a listed mod channel. */
+function isMessageInMidlandEuModScope(message) {
+  if (!message?.guild || !isMidlandEuGuild(message.guild.id)) return false;
+  const channelId = String(message.channelId);
+  if (MIDLAND_EU_MOD_CHANNEL_IDS.has(channelId)) return true;
+  const ch = message.channel;
+  if (ch && typeof ch.isThread === 'function' && ch.isThread()) {
+    const parentId = String(ch.parentId);
+    if (MIDLAND_EU_MOD_CHANNEL_IDS.has(parentId)) return true;
+  }
+  return false;
+}
+
 function isMessageInGvGeneral(message) {
+  if (!isGvMainGuild(message.guild?.id)) return false;
   if (!message?.channel) return false;
   const ch = message.channel;
   if (typeof ch.isThread === 'function' && ch.isThread()) {
@@ -2332,6 +2370,81 @@ function isMessageInGvGeneral(message) {
     String(message.channelId) === String(TRIGGER_CHANNEL_ID)
     || String(message.channelId) === String(GV_GENERAL_CHANNEL_ID)
   );
+}
+
+/** Same trigger chain as gv-general moderation holds, without Soon/Miaow/Poor-Savage side effects. */
+function detectStandardModerationTrigger(message, gvModerationText) {
+  const csamScanText = getMessageTextForCsamScan(message);
+  if (csamScanText && hasCsamGroomingTrigger(csamScanText)) return 'csam-grooming';
+  if (messageHasBlockedMediaId(message)) return 'blocked-media';
+  if (!message.content && !messageHasTenorLink(message)) return null;
+  if (isRunicInscriptionAllowed(gvModerationText)) return null;
+  if (hasSpamSlur(gvModerationText)) return 'slur';
+  if (messageHasTenorLink(message)) return null;
+  if (MULTILINGUAL_BANTER_BYPASS && isPrimarilyNonEnglishCasualChat(gvModerationText)) return null;
+  if (hasHarassmentRaceBaitEvasion(gvModerationText, message.author.id)) return 'harassment-evasion';
+  if (hasStereotypeRaceReligionRedirect(gvModerationText)) return 'stereotype-race-religion';
+  if (hasMedicalPsychiatricInsult(gvModerationText)) return 'medical-psych';
+  if (hasDangerFramingTargetPlayersOrHumans(gvModerationText)) return 'danger-framing';
+  if (hasSafeContext(gvModerationText)) return null;
+  if (hasGeopoliticalHardRedirect(gvModerationText)) return 'geopolitical';
+  if (hasBalkansRealWorldOffTopicRedirect(gvModerationText)) return 'balkans-irl';
+  if (hasOffTopicPhrase(gvModerationText)) return 'off-topic';
+  if (shouldTriggerReligionPolitics(gvModerationText)) return 'religion-politics';
+  return null;
+}
+
+async function handleMidlandEuModeration(message, reason) {
+  const raw = message.content ? String(message.content).trim() : '';
+  const snippet = raw ? raw.slice(0, 500) + (raw.length > 500 ? '…' : '') : '(no text)';
+  const ch = message.channel;
+  const channelRef =
+    ch && typeof ch.isThread === 'function' && ch.isThread()
+      ? `<#${message.channelId}> (thread under <#${ch.parentId}>)`
+      : `<#${message.channelId}>`;
+
+  try {
+    await message.delete();
+  } catch (err) {
+    console.error('[midland-eu] delete failed:', err.message);
+  }
+
+  try {
+    await message.author.send(MIDLAND_EU_WARN_DM);
+  } catch (err) {
+    console.warn(`[midland-eu] warn DM failed for ${message.author.tag}:`, err.message);
+  }
+
+  try {
+    const logChannel = await message.client.channels.fetch(MIDLAND_EU_OFFENSE_LOG_CHANNEL_ID);
+    if (logChannel?.isTextBased()) {
+      const logBody = [
+        `**Offense** — \`${reason}\``,
+        `User: ${message.author.toString()} (\`${message.author.id}\`)`,
+        `Channel: ${channelRef}`,
+        `Message ID: \`${message.id}\``,
+        '',
+        snippet,
+      ].join('\n');
+      await logChannel.send({
+        content: logBody.length > 2000 ? logBody.slice(0, 1997) + '…' : logBody,
+        allowedMentions: { parse: [] },
+      });
+    }
+  } catch (err) {
+    console.error('[midland-eu] offense log failed:', err.message);
+  }
+
+  console.log(`[midland-eu] ${message.author.tag} — ${reason} (#${message.channelId})`);
+}
+
+async function handleMidlandEuMessage(message) {
+  const rawGvContent = message.content ? String(message.content) : '';
+  const gvModerationText = stripOuterQuotesForGeneral(rawGvContent.trim()) || rawGvContent;
+  const reason = detectStandardModerationTrigger(message, gvModerationText);
+  if (reason) {
+    await handleMidlandEuModeration(message, reason);
+  }
 }
 
 /**
@@ -3185,6 +3298,12 @@ async function handleTempVoiceCommand(message) {
 client.once('ready', () => {
   botReadyAt = Date.now();
   console.log(`Logged in as ${client.user.tag}`);
+  console.log(`GV main guild: ${GV_MAIN_GUILD_ID}`);
+  if (MIDLAND_EU_ENABLED) {
+    console.log(
+      `Midland EU moderation: guild ${MIDLAND_EU_GUILD_ID}; channels ${[...MIDLAND_EU_MOD_CHANNEL_IDS].join(', ')} → delete + warn DM + <#${MIDLAND_EU_OFFENSE_LOG_CHANNEL_ID}>`,
+    );
+  }
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   const miaowImageCount = MIAOW_IMAGE_NAMES.map((name) => path.join(EMPEROR_MIAOW_DIR, name)).filter((p) => fs.existsSync(p)).length;
   console.log(
@@ -3518,6 +3637,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 // When a user joins the server, post the welcome video + user tag in #new-arrivals (skip if already welcomed on role to avoid double message)
 // Welcome each UserID only ONCE ever (persisted); skip very new accounts (bot/alt filter)
 client.on('guildMemberAdd', async (member) => {
+  if (!isGvMainGuild(member.guild.id)) return;
   if (welcomedOnceEver.has(member.user.id)) return; // already welcomed once ever – never again
   if (welcomedUserIds.has(member.user.id)) return; // already welcomed on role this session – don't welcome again
   if (!shouldWelcomeAccountAge(member.user)) {
@@ -3545,6 +3665,7 @@ client.on('guildMemberRemove', (member) => {
 
 // When a new user picks one of the nation roles (or is given a role) for the first time: welcome in #new-arrivals (same as join). Skip if already welcomed on join to avoid double message.
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  if (!isGvMainGuild(newMember.guild.id)) return;
   if (newMember.roles.cache.size <= oldMember.roles.cache.size) return; // no role added
   const addedRoleIds = newMember.roles.cache.filter(r => !oldMember.roles.cache.has(r.id));
   const pickedNationRole = [...addedRoleIds.keys()].some(id => WELCOME_ROLE_IDS.has(id));
@@ -3594,6 +3715,17 @@ client.on('messageCreate', async (message) => {
       return;
     }
     scheduleFourImageScamAttachmentRecheck(message);
+  }
+
+  // Midland Nation EU: delete + warn DM + offense log (same text triggers as gv-general holds).
+  if (MIDLAND_EU_ENABLED && isMessageInMidlandEuModScope(message)) {
+    await handleMidlandEuMessage(message);
+    return;
+  }
+
+  if (!isGvMainGuild(message.guild.id)) {
+    if (DEBUG) console.log(`[skip] not GV main guild (${message.guild.id})`);
+    return;
   }
 
   const channelId = String(message.channelId);
