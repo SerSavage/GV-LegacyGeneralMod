@@ -721,6 +721,47 @@ function loadSafeContextWords() {
 const SAFE_CONTEXT_WORDS = loadSafeContextWords();
 console.log(`Safe-context terms: ${SAFE_CONTEXT_WORDS.size} (GV Wiki + safe-context.txt + gv-legacy-index)`);
 
+// Gloria Victis character attributes — never hold delete for stat-only posts (constitution / strength / dexterity).
+const GV_CHARACTER_STAT_WORDS = [
+  'constitution', 'strength', 'dexterity', 'agility', 'vitality', 'endurance',
+  'intelligence', 'wisdom', 'charisma', 'stamina', 'willpower',
+  'attribute', 'attributes',
+].map((w) => w.toLowerCase());
+const GV_CHARACTER_STAT_ALIASES = new Set([
+  ...GV_CHARACTER_STAT_WORDS,
+  'str', 'dex', 'con', 'vit', 'agi', 'end', 'int', 'wis', 'cha', 'stat', 'stats',
+]);
+
+/** True when the message is only GV stat names/aliases (optional numbers, str/dex/con, punctuation). */
+function isGvCharacterStatMessage(text) {
+  if (!text || typeof text !== 'string') return false;
+  const norm = stripDiacritics(text)
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .toLowerCase()
+    .trim();
+  if (!norm) return false;
+  const tokens = norm
+    .split(/\s+/)
+    .map((w) => w.replace(/^[^\w\u00C0-\u024F]+|[^\w\u00C0-\u024F]+$/g, '').toLowerCase())
+    .filter(Boolean);
+  if (tokens.length === 0) return false;
+  let sawStat = false;
+  for (const raw of tokens) {
+    const segments = raw.split(/[/+:\-]+/).filter(Boolean);
+    for (const seg of segments) {
+      const t = seg.replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+      if (!t) continue;
+      if (/^\d+$/.test(t)) continue;
+      if (GV_CHARACTER_STAT_ALIASES.has(t)) {
+        sawStat = true;
+        continue;
+      }
+      return false;
+    }
+  }
+  return sawStat;
+}
+
 // Spam/slur terms – if message contains any of these, bot replies with the video (no safe-context bypass).
 // Includes common evasive spellings users type to avoid filters.
 const SPAM_SLUR_TERMS = [
@@ -1172,6 +1213,7 @@ const OFF_TOPIC_SAFE_PHRASES = ['mad men', 'mad man', 'lunatics', 'lunatic', 'ga
 
 // Check if message contains any off-topic phrase (substring + compact anti-evasion for spaced typing)
 function hasOffTopicPhrase(text) {
+  if (isGvCharacterStatMessage(text)) return false;
   if (!text || typeof text !== 'string') return false;
   const lower = text.toLowerCase();
   if (OFF_TOPIC_SAFE_PHRASES.some((safe) => lower.includes(safe))) return false;
@@ -1713,6 +1755,7 @@ function isPrimarilyNonEnglishCasualChat(text) {
 // If message contains any safe-context word (game/community talk), don't trigger
 function hasSafeContext(text) {
   if (!text || typeof text !== 'string') return false;
+  if (isGvCharacterStatMessage(text)) return true;
   if (hasRunicEpigraphySafeContext(text)) return true;
   const normalizedRunes = normalizeRunesForContextScan(text);
   if (hasLanguageLearningContext(text) || hasLanguageLearningContext(normalizedRunes)) return true;
@@ -1809,6 +1852,7 @@ function shouldSkipReligionGodToken(fullText, word) {
 // Combined: should we treat message as religion/politics (ratio, ideological phrase, or obvious religion/politics phrase)
 function shouldTriggerReligionPolitics(text) {
   if (!text || typeof text !== 'string') return false;
+  if (isGvCharacterStatMessage(text)) return false;
   return isMostlyReligionPolitics(text) || messageContainsIdeologicalPhrase(text) || messageContainsReligionPoliticsPhrase(text);
 }
 
@@ -1833,19 +1877,17 @@ const REGION_OR_SERVER_ZONE_WORDS = new Set([
 // nation / nations — GV faction chat ("nation chat", "which nation"); words.txt lists bare "nation" as political otherwise.
 // danger / dangerous — common in GV (NPCs, nations, combat); not political by themselves (see hasGameDangerLoreContext).
 // constitution / strength / dexterity — GV character attributes; words.txt may list "constitution" as political otherwise.
-const GV_CHARACTER_STAT_WORDS = [
-  'constitution', 'strength', 'dexterity', 'agility', 'vitality', 'endurance',
-  'intelligence', 'wisdom', 'charisma', 'stamina', 'willpower',
-  'attribute', 'attributes',
-].map((w) => w.toLowerCase());
 const TRIGGER_WORD_IGNORE = new Set([
   ...['good', 'goods', 'mod', 'mods', 'nation', 'nations', 'danger', 'dangerous'].map((w) => w.toLowerCase()),
   ...GV_CHARACTER_STAT_WORDS,
   ...REGION_OR_SERVER_ZONE_WORDS,
 ]);
+function cleanModerationToken(word) {
+  return String(word || '').replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase();
+}
 function wordMatchesTriggerWord(word) {
   if (!word) return false;
-  if (TRIGGER_WORD_IGNORE.has(word.toLowerCase())) return false;
+  if (TRIGGER_WORD_IGNORE.has(cleanModerationToken(word))) return false;
   if (isPoliticalOrReligionTerm(word)) return true;
   const normalized = normalizeForMatch(word);
   for (const tw of triggerWords) {
@@ -2390,6 +2432,7 @@ function detectStandardModerationTrigger(message, gvModerationText) {
   if (!message.content && !messageHasTenorLink(message)) return null;
   if (isRunicInscriptionAllowed(gvModerationText)) return null;
   if (hasSpamSlur(gvModerationText)) return 'slur';
+  if (isGvCharacterStatMessage(gvModerationText)) return null;
   if (messageHasTenorLink(message)) return null;
   if (MULTILINGUAL_BANTER_BYPASS && isPrimarilyNonEnglishCasualChat(gvModerationText)) return null;
   if (hasHarassmentRaceBaitEvasion(gvModerationText, message.author.id)) return 'harassment-evasion';
@@ -3873,6 +3916,11 @@ client.on('messageCreate', async (message) => {
     const videoPayload = getSpamVideoPayload();
     const gifOrVideoPayload = repeated ? videoPayload : TENOR_GIFS[Math.floor(Math.random() * TENOR_GIFS.length)];
     await deleteInGeneralAndForwardMovedHold(message, gifOrVideoPayload);
+    return;
+  }
+
+  if (isGvCharacterStatMessage(gvModerationText)) {
+    if (DEBUG) console.log('[skip] GV character stat message:', gvModerationText.slice(0, 80));
     return;
   }
 
