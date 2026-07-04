@@ -779,6 +779,13 @@ const SPAM_SLUR_TERMS = [
   'fuck you, choke on it', 'fuck you, stay down', 'fuck you, get lost forever', 'fuck you, disappear',
   'fuck you into oblivion and back again', 'fuck you until the universe forgets you exist', "fuck you into a hole you can't crawl out of",
   'fuck you straight into hell', 'fuck you into dust',
+  // Anti-Indian / South-Asian racist slurs (4chan meme terms; also checked in hasIndianAsianRaceSlur)
+  'pajeet', 'pajeets', 'poojeet', 'poojeets', 'poopjeet', 'poopjeets',
+  'jeet', 'jeets', 'j33t', 'j3et', 'p4jeet', 'p@jeet', 'paje3t',
+  'curry muncher', 'currymuncher', 'curry-muncher',
+  'dothead', 'dot head', 'dot-head',
+  'designated shitting', 'designated shitter',
+  'street shitter', 'street shitting',
 ].map(w => w.toLowerCase());
 
 // Religion-related "goy" terms – same as religion/politics: redirect to #off-topic with random GIF (no safe-context bypass)
@@ -1242,9 +1249,12 @@ function hasStereotypeRaceReligionRedirect(text) {
   if (/\bisn'?t everyone\b/.test(lower) && group.test(text)) return true;
   if (/\baren'?t (all|everyone|most people)\b/.test(lower) && group.test(text)) return true;
   if (/\bwhy (do|are) (all|most|every)\b/.test(lower) && group.test(text)) return true;
-  if (/\b(all|most) (muslims|jews|christians|mexicans|blacks|whites|asians|arabs|hindus|immigrants)\s+(are|like|so|always|just)\b/i.test(lower)) return true;
-  if (/\bdo (all|most) (muslims|jews|christians|hindus|mormons)\b/i.test(lower)) return true;
-  if (/\b(is|are) (all|most) (muslims|jews|christians|hindus|mexicans)\b/i.test(lower)) return true;
+  if (/\b(all|most) (muslims|jews|christians|mexicans|blacks|whites|asians|arabs|hindus|indians|immigrants)\s+(are|like|so|always|just|smell|stink)\b/i.test(lower)) return true;
+  if (/\bdo (all|most) (muslims|jews|christians|hindus|indians|mormons)\b/i.test(lower)) return true;
+  if (/\b(is|are) (all|most) (muslims|jews|christians|hindus|mexicans|indians)\b/i.test(lower)) return true;
+  // Degrading "brown people" / curry stereotypes aimed at South Asians
+  if (/\b(curry|indians?|hindus?|pajeets?|jeets?)\s+(smell|stink|reek)\b/i.test(lower)) return true;
+  if (/\b(smell|stink|reek)s?\s+(like|of)\s+curry\b/i.test(lower)) return true;
   // Racialized “brown people” bait / UK meme patterns (desktop list)
   if (matchesPhraseOrWordBoundaries(lower, 'soft spot for brown people')) return true;
   if (matchesPhraseOrWordBoundaries(lower, 'brown spot for') && matchesPhraseOrWordBoundaries(lower, 'brown people')) return true;
@@ -1305,6 +1315,91 @@ function hasMedicalPsychiatricInsult(text) {
   return false;
 }
 console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (banter allowlist excludes retard/retarded).`);
+
+// Anti-Indian / South-Asian racist slurs & degrading meme terms — no safe-context bypass; evasion-resistant compact scan.
+const INDIAN_ASIAN_SLUR_SUBSTRINGS = [
+  'pajeet', 'pajeets', 'poojeet', 'poojeets', 'poopjeet', 'poopjeets', 'poogeet',
+  'jeetcel', 'jeetcels', 'jeetmax', 'jeetmaxx', 'jeetmaxxing',
+  'curry muncher', 'currymuncher', 'curry-muncher', 'currymunchers',
+  'dot head', 'dothead', 'dot-head', 'dot heads', 'dotheads',
+  'designated shitting', 'designated shitter', 'designated shit', 'designated shitting street',
+  'street shitter', 'street shitting', 'street shit', 'street pooper',
+  'shit skin', 'shitskin', 'shit-skin',
+  'bobs and vagene', 'bobs and vagen', 'send bobs', 'send bob',
+  'cow piss', 'cow urine', 'cow worshiper', 'cow worshipper',
+  'open defecat', 'open defecation',
+  'indian rapist', 'rapist indian', 'indians are rapists', 'indian scammers',
+  'go back to india', 'go back to your curry', 'curry people',
+  'smell like curry', 'reeks of curry', 'stinks of curry',
+  'typical indian', 'typical pajeet',
+].map((s) => s.toLowerCase());
+
+/** Leet / punctuation variants for pajeet·jeet (checked on normalized + compact text). */
+const INDIAN_ASIAN_SLUR_TOKEN_RES = [
+  /\bp+[a@4]+j+[e3]+[e3]+t+s?\b/i,
+  /\bpoo+j+[e3]+t+s?\b/i,
+  /\bj+[e3]+[e3]+t+s?\b/i,
+  /\bjeets?\b/i,
+];
+
+function compactIncludesIndianAsianSlurToken(compact) {
+  if (!compact) return false;
+  if (compact.includes('pajeet') || compact.includes('poojeet') || compact.includes('poopjeet')) return true;
+  if (/(?:^|[^a-z])p+a+j+e+e+t+(?:s)?(?:[^a-z]|$)/.test(compact)) return true;
+  if (/(?:^|[^a-z])p+o+o+j+e+e+t+(?:s)?(?:[^a-z]|$)/.test(compact)) return true;
+  // Spaced / punctuated typing: j e e t, j.e.e.t
+  if (/(?:^|[^a-z])j+e+e+t+(?:s)?(?:[^a-z]|$)/.test(compact)) return true;
+  if (compact.includes('currymuncher') || compact.includes('dothead')) return true;
+  if (compact.includes('designatedshitting') || compact.includes('designatedshitter')) return true;
+  if (compact.includes('streetshitter') || compact.includes('streetshitting')) return true;
+  return false;
+}
+
+function hasIndianAsianRaceSlur(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = stripDiacritics(text.toLowerCase());
+  const normalized = normalizeForMatch(lower);
+  const compact = normalized.replace(/[^a-z]/g, '');
+
+  for (const sub of INDIAN_ASIAN_SLUR_SUBSTRINGS) {
+    if (lower.includes(sub)) return true;
+    const subNorm = normalizeForMatch(sub);
+    if (subNorm.length >= 4 && normalized.includes(subNorm)) return true;
+    if (sub.includes(' ') && sub.replace(/\s+/g, '').length >= 5 && compact.includes(sub.replace(/\s+/g, ''))) {
+      return true;
+    }
+  }
+
+  for (const re of INDIAN_ASIAN_SLUR_TOKEN_RES) {
+    if (re.test(lower) || re.test(normalized)) return true;
+  }
+  if (compactIncludesIndianAsianSlurToken(compact)) return true;
+
+  // Slur usage of "jeet" as a label (e.g. "Heard you were a Jeet") — not bare names in neutral sentences.
+  if (
+    /\b(?:a|the|some|that|another|typical|fucking|fcking|f+ing|damn)\s+jeets?\b/i.test(lower)
+    || /\b(?:you|u|ur|ya|he|she|they|we)(?:\s*(?:'re|r|are|were|was))?\s+(?:a|the|some|that|another|typical)?\s*jeets?\b/i.test(lower)
+    || /\bjeets?\s+(?:ass|behavior|behaviour|energy|moment|move|brain|logic)\b/i.test(lower)
+  ) {
+    return true;
+  }
+
+  // Degrading generalizations targeting Indians / Hindus / South Asians.
+  if (/\b(all|most|every)\s+(indians?|hindus?|pajeets?|jeets?)\s+(are|like|smell|stink|always)\b/i.test(lower)) {
+    return true;
+  }
+  if (/\b(indians?|hindus?)\s+(are|smell|stink|always)\s+(dirty|filthy|stupid|disgusting|gross|trash|subhuman|rapists?|scammers?|smelly)\b/i.test(lower)) {
+    return true;
+  }
+  if (
+    /\b(stupid|dirty|filthy|smelly|gross|disgusting|trash|subhuman|inbred|rapist|scammer)\s+(indians?|hindus?|pajeets?|jeets?)\b/i.test(lower)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+console.log(`Indian/Asian racist slur substrings: ${INDIAN_ASIAN_SLUR_SUBSTRINGS.length} (+ jeet/pajeet compact evasion).`);
 
 // Harassment / race-bait with evasion-resistant normalization ("de lusional", "d3lusional", "SirDelulu", etc.).
 // Same rules for all users — routed to hold/off-topic flow with no safe-context bypass.
@@ -2431,6 +2526,7 @@ function detectStandardModerationTrigger(message, gvModerationText) {
   if (messageHasBlockedMediaId(message)) return 'blocked-media';
   if (!message.content && !messageHasTenorLink(message)) return null;
   if (isRunicInscriptionAllowed(gvModerationText)) return null;
+  if (hasIndianAsianRaceSlur(gvModerationText)) return 'indian-asian-slur';
   if (hasSpamSlur(gvModerationText)) return 'slur';
   if (isGvCharacterStatMessage(gvModerationText)) return null;
   if (messageHasTenorLink(message)) return null;
@@ -3908,8 +4004,8 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Serious slurs (global list) — always enforced before multilingual bypass.
-  if (hasSpamSlur(gvModerationText)) {
+  // Serious slurs (global list + anti-Indian/South-Asian slurs) — always enforced before multilingual bypass.
+  if (hasSpamSlur(gvModerationText) || hasIndianAsianRaceSlur(gvModerationText)) {
     const userId = message.author.id;
     const repeated = isRepeatedSlurOffender(userId);
     recordSlurReply(userId);
