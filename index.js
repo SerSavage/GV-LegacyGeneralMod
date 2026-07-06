@@ -708,6 +708,8 @@ const SAFE_CONTEXT_BASE = [
   'choosing a nation', 'choosing a faction', 'more military', 'nation choice', 'pick a nation',
   // Player region / server zone shorthand (not IRL politics)
   'north america', 'south america', 'southeast asia', 'south east asia', 'latin america', 'oceania',
+  // GV official server shards (EU / SEA / NA) — nationality labels when server hopping are game talk
+  'wolfield', 'wolfied', 'aquilla', 'aquila', 'dukla', 'server hop', 'server hopping', 'server hoppers',
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
@@ -1847,10 +1849,52 @@ function isPrimarilyNonEnglishCasualChat(text) {
   return false;
 }
 
+// GV server shards + nationality labels used for server hopping / zerg callouts (not IRL geopolitics).
+const GV_SERVER_SHARD_RE = /\b(wolfield|wolfied|wolfi|aquill?a|dukla)\b/i;
+const SERVER_HOP_GAME_TERMS_RE =
+  /\b(army|guild|guilds|players?|zerg|zergs|raid|raids|siege|take|took|taken|hop|hopping|hoppers|server|servers|shard|shards|online|pop|population|group|groups|alliance|alliances|war|pvp|attack|defend|defense|defence|push|wiped|wipe|logged|log\s*in)\b/i;
+const SERVER_HOP_DEMONYNMS = new Set([
+  'chinese', 'china', 'korean', 'korea', 'japanese', 'japan', 'american', 'america', 'british', 'french', 'german',
+  'russian', 'russia', 'polish', 'poland', 'swedish', 'sweden', 'dutch', 'italian', 'italy', 'spanish', 'spain',
+  'brazilian', 'brazil', 'indian', 'india', 'pakistani', 'pakistan', 'iranian', 'iran', 'israeli', 'turkish',
+  'ukrainian', 'taiwanese', 'taiwan', 'mexican', 'mexico', 'canadian', 'canada', 'australian', 'australia',
+  'european', 'eu', 'na', 'sea', 'oce', 'oceania',
+].map((w) => w.toLowerCase()));
+
+/** Nationality/region + in-game force talk, GV shard names, or player-count zerg posts. */
+function hasGvServerShardOrRegionPlayerContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = stripDiacritics(text.toLowerCase());
+
+  if (GV_SERVER_SHARD_RE.test(lower)) return true;
+  if (/\bserver\s*hop(?:ping|pers?)?\b/i.test(lower)) return true;
+  if (/\b\d+\+?\s*players?\b/i.test(lower) && SERVER_HOP_GAME_TERMS_RE.test(lower)) return true;
+
+  if (
+    /\b(chinese|korean|japanese|american|british|french|german|russian|polish|swedish|eu|na|sea|oce)\s+(army|guild|zerg|group|raid|players?)\b/i.test(lower)
+  ) {
+    return true;
+  }
+
+  if (SERVER_HOP_GAME_TERMS_RE.test(lower)) {
+    for (const dem of SERVER_HOP_DEMONYNMS) {
+      if (matchesPhraseOrWordBoundaries(lower, dem)) return true;
+    }
+  }
+
+  return false;
+}
+
+function shouldSkipPoliticalDemonymForServerHop(fullText, word) {
+  if (!SERVER_HOP_DEMONYNMS.has(cleanModerationToken(word))) return false;
+  return hasGvServerShardOrRegionPlayerContext(fullText);
+}
+
 // If message contains any safe-context word (game/community talk), don't trigger
 function hasSafeContext(text) {
   if (!text || typeof text !== 'string') return false;
   if (isGvCharacterStatMessage(text)) return true;
+  if (hasGvServerShardOrRegionPlayerContext(text)) return true;
   if (hasRunicEpigraphySafeContext(text)) return true;
   const normalizedRunes = normalizeRunesForContextScan(text);
   if (hasLanguageLearningContext(text) || hasLanguageLearningContext(normalizedRunes)) return true;
@@ -1948,6 +1992,7 @@ function shouldSkipReligionGodToken(fullText, word) {
 function shouldTriggerReligionPolitics(text) {
   if (!text || typeof text !== 'string') return false;
   if (isGvCharacterStatMessage(text)) return false;
+  if (hasGvServerShardOrRegionPlayerContext(text)) return false;
   return isMostlyReligionPolitics(text) || messageContainsIdeologicalPhrase(text) || messageContainsReligionPoliticsPhrase(text);
 }
 
@@ -2011,6 +2056,7 @@ function isMostlyReligionPolitics(text) {
   if (words.length < RELIGION_POLITICS_MIN_WORDS) return false;
   let triggerCount = 0;
   for (const w of words) {
+    if (shouldSkipPoliticalDemonymForServerHop(text, w)) continue;
     if (shouldSkipReligionGodToken(text, w)) continue;
     if (wordMatchesTriggerWord(w) || wordContainsGoy(w)) triggerCount++;
   }
