@@ -704,6 +704,8 @@ const SAFE_CONTEXT_BASE = [
   'ping', 'marker', 'unplayable', 'match', 'matchmaking', 'latency', 'ms',
   // In-game PvP / character combat – not IRL violence (e.g. "Meow Army", "it's going to be a bloodbath" = in-game)
   'bloodbath', 'meow army',
+  // Sports / speed idiom — "turned on the jets" (fast PvP), not the jeet slur
+  'turned on the jets', 'on the jets',
   // Nation choice / faction traits – game context (e.g. "Soon you'll be choosing a nation", "some are more military")
   'choosing a nation', 'choosing a faction', 'more military', 'nation choice', 'pick a nation',
   // Player region / server zone shorthand (not IRL politics)
@@ -1047,7 +1049,10 @@ function hasSpamSlur(text) {
   const compact = normalizeForMatch(lower.replace(/!/g, 'i')).replace(/[^a-z0-9]/g, '');
   for (const term of SPAM_SLUR_TERMS) {
     if (term.length < 4) continue;
+    const rawTc = term.replace(/!/g, 'i').replace(/[^a-z0-9]/g, '');
     const tc = normalizeForMatch(term.replace(/!/g, 'i')).replace(/[^a-z0-9]/g, '');
+    // normalizeForMatch collapses "jeets"→"jets" — must not false-positive sports idiom "turned on the jets".
+    if (rawTc.startsWith('j') && rawTc.includes('ee') && !tc.includes('ee')) continue;
     if (tc.length >= 4 && compact.includes(tc)) return true;
   }
   return false;
