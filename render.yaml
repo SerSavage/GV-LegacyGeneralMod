@@ -5,8 +5,11 @@ services:
     name: gv-legacy-general-mod
     runtime: node
     # ffmpeg helps @discordjs/voice decode ElevenLabs MP3 for Midland POWER TTS playback.
-    buildCommand: apt-get update && apt-get install -y ffmpeg && yarn
-    startCommand: yarn start
+    # Use npm (package-lock.json). @discordjs/voice@0.19 needs Node 22.12+.
+    buildCommand: apt-get update && apt-get install -y ffmpeg && npm ci
+    startCommand: npm start
     envVars:
       - key: DISCORD_TOKEN
         sync: false
+      - key: NODE_VERSION
+        value: "22.20.2"
