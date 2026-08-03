@@ -2,6 +2,9 @@
  * Midland EU — MIDLAND POWER voice booth translation.
  * Deepgram (STT) → DeepL (translate → EN) → ElevenLabs (TTS) → Discord playback.
  * Only Guild Leader / Guild Officer roles are transcribed; everyone else is ignored.
+ *
+ * Supported speech → English: EN, FR, RU, ES, DE, PL, ZH (Mandarin/Traditional),
+ * PT (Portuguese/Brazilian), MS (Malay), VI, TH, KO — plus DeepL auto-detect fallback.
  */
 const fs = require('fs');
 const path = require('path');
@@ -68,9 +71,60 @@ const ENABLED = Boolean(
   && MIDLAND_TRANSLATOR_ROLE_IDS.size > 0,
 );
 
-/** DeepL target English (American). Source auto-detect. */
+/** DeepL target English (American). Source auto-detect when unmapped. */
 const DEEPL_TARGET = 'en-US';
-const ENGLISH_LANG_CODES = new Set(['en', 'en-us', 'en-gb', 'en-au', 'english']);
+const ENGLISH_LANG_CODES = new Set(['en', 'en-us', 'en-gb', 'en-au', 'en-in', 'english']);
+
+/**
+ * Languages we expect Leaders/Officers to speak in MIDLAND POWER.
+ * Deepgram detects; DeepL translates → English; ElevenLabs speaks English.
+ * Chinese: Mandarin + Traditional both map to DeepL source `zh` (DeepL does not split source variants).
+ * Portuguese / Brazilian: both map to DeepL source `pt`.
+ */
+const SUPPORTED_SPEECH_LANGUAGES = [
+  'en', 'fr', 'ru', 'es', 'de', 'pl',
+  'zh', // Mandarin / Chinese (incl. Traditional → zh)
+  'pt', // Portuguese + Brazilian Portuguese
+  'ms', // Malay (Malaysian)
+  'vi', // Vietnamese
+  'th', // Thai
+  'ko', // Korean
+];
+
+/** Map Deepgram / BCP-47 style codes → DeepL source language codes. */
+const DEEPL_SOURCE_BY_HINT = {
+  fr: 'fr', french: 'fr',
+  ru: 'ru', russian: 'ru',
+  es: 'es', spanish: 'es',
+  de: 'de', german: 'de',
+  pl: 'pl', polish: 'pl',
+  // Chinese — Mandarin / Simplified / Traditional / Cantonese→still zh for DeepL text source
+  zh: 'zh',
+  'zh-cn': 'zh',
+  'zh-tw': 'zh',
+  'zh-hk': 'zh',
+  'zh-hans': 'zh',
+  'zh-hant': 'zh',
+  cmn: 'zh',
+  mandarin: 'zh',
+  chinese: 'zh',
+  yue: 'zh',
+  // Portuguese — European + Brazilian
+  pt: 'pt',
+  'pt-pt': 'pt',
+  'pt-br': 'pt',
+  portuguese: 'pt',
+  brazilian: 'pt',
+  // Malay / Malaysian
+  ms: 'ms',
+  msa: 'ms',
+  malay: 'ms',
+  malaysian: 'ms',
+  // Vietnamese, Thai, Korean
+  vi: 'vi', vietnamese: 'vi',
+  th: 'th', thai: 'th',
+  ko: 'ko', korean: 'ko',
+};
 
 let clientRef = null;
 let deepgram = null;
@@ -218,19 +272,34 @@ async function transcribeWav(wavBuffer) {
 }
 
 async function translateToEnglish(text, sourceLangHint) {
-  const src = sourceLangHint && !ENGLISH_LANG_CODES.has(sourceLangHint)
-    ? sourceLangHint.split('-')[0]
-    : null;
-  // DeepL: null source = auto-detect
+  const hint = String(sourceLangHint || '').toLowerCase().trim();
   let sourceLang = null;
-  if (src && ['fr', 'ru', 'es', 'de', 'pl', 'en'].includes(src)) {
-    sourceLang = src === 'en' ? null : src;
+  if (hint && !ENGLISH_LANG_CODES.has(hint) && !/^en([-_]|$)/i.test(hint)) {
+    const base = hint.split(/[-_]/)[0];
+    sourceLang =
+      DEEPL_SOURCE_BY_HINT[hint]
+      || DEEPL_SOURCE_BY_HINT[base]
+      || null;
   }
-  const result = await deeplClient.translateText(text, sourceLang, DEEPL_TARGET);
-  return {
-    text: String(result.text || '').trim(),
-    detectedSource: String(result.detectedSourceLang || sourceLang || '').toLowerCase(),
-  };
+  // DeepL: null source = auto-detect (covers edge cases / new Deepgram labels)
+  try {
+    const result = await deeplClient.translateText(text, sourceLang, DEEPL_TARGET);
+    return {
+      text: String(result.text || '').trim(),
+      detectedSource: String(result.detectedSourceLang || sourceLang || '').toLowerCase(),
+    };
+  } catch (err) {
+    // If an explicit source code is rejected (e.g. beta MS on some plans), retry with auto-detect.
+    if (sourceLang) {
+      warn(`DeepL source "${sourceLang}" failed (${err.message}); retrying auto-detect`);
+      const result = await deeplClient.translateText(text, null, DEEPL_TARGET);
+      return {
+        text: String(result.text || '').trim(),
+        detectedSource: String(result.detectedSourceLang || '').toLowerCase(),
+      };
+    }
+    throw err;
+  }
 }
 
 function toNodeReadable(audio) {
@@ -476,6 +545,7 @@ async function init(client) {
     `Enabled — guild ${MIDLAND_EU_GUILD_ID}; channel ${MIDLAND_EU_VOICE_CHANNEL_ID}; roles ${[...MIDLAND_TRANSLATOR_ROLE_IDS].join(',')}`,
   );
   log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → ElevenLabs(${ELEVENLABS_VOICE_ID})`);
+  log(`Speech languages: ${SUPPORTED_SPEECH_LANGUAGES.join(', ')} (+ auto-detect fallback)`);
 
   try {
     const guild = await client.guilds.fetch(MIDLAND_EU_GUILD_ID);
