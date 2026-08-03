@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const http = require('http');
 const dns = require('dns');
 const Parser = require('rss-parser');
+const midlandVoiceTranslate = require('./midland-voice-translate');
 
 // --- Config (env or defaults for local) ---
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
@@ -3504,6 +3505,7 @@ client.once('ready', () => {
       `Midland EU moderation: guild ${MIDLAND_EU_GUILD_ID}; channels ${[...MIDLAND_EU_MOD_CHANNEL_IDS].join(', ')} → delete + warn DM + <#${MIDLAND_EU_OFFENSE_LOG_CHANNEL_ID}>`,
     );
   }
+  void midlandVoiceTranslate.init(client);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
   const miaowImageCount = MIAOW_IMAGE_NAMES.map((name) => path.join(EMPEROR_MIAOW_DIR, name)).filter((p) => fs.existsSync(p)).length;
   console.log(
@@ -3757,6 +3759,13 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
+  // Midland POWER booth: auto-join/leave for Leader/Officer translation (independent of GV temp-voice).
+  try {
+    await midlandVoiceTranslate.onVoiceStateUpdate(oldState, newState);
+  } catch (err) {
+    console.error('[midland-voice] voiceStateUpdate failed:', err.message || err);
+  }
+
   if (shouldPauseTempVoiceActions()) return;
   const member = newState.member || oldState.member;
   if (!member || member.user.bot) return;

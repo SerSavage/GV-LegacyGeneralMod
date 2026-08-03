@@ -4,7 +4,8 @@ services:
   - type: worker
     name: gv-legacy-general-mod
     runtime: node
-    buildCommand: yarn
+    # ffmpeg helps @discordjs/voice decode ElevenLabs MP3 for Midland POWER TTS playback.
+    buildCommand: apt-get update && apt-get install -y ffmpeg && yarn
     startCommand: yarn start
     envVars:
       - key: DISCORD_TOKEN
