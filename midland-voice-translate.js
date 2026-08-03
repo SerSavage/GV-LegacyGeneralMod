@@ -3,8 +3,10 @@
  * Deepgram (STT) → DeepL (translate → EN) → ElevenLabs (TTS) → Discord playback.
  * Only Guild Leader / Guild Officer roles are transcribed; everyone else is ignored.
  *
- * Supported speech → English: EN, FR, RU, ES, DE, PL, ZH (Mandarin/Traditional),
- * PT (Portuguese/Brazilian), MS (Malay), VI, TH, KO — plus DeepL auto-detect fallback.
+ * Supported speech → English: EN, FR, RU, ES, DE, PL, IT, ZH (Mandarin/Traditional),
+ * PT (Portuguese/Brazilian), MS (Malay), VI, TH, KO,
+ * SR/HR/BS/SL/MK (ex-Yugoslavia) + SQ (Albanian/Kosovo), Montenegrin→SR —
+ * plus DeepL auto-detect fallback.
  */
 const fs = require('fs');
 const path = require('path');
@@ -82,13 +84,20 @@ const ENGLISH_LANG_CODES = new Set(['en', 'en-us', 'en-gb', 'en-au', 'en-in', 'e
  * Portuguese / Brazilian: both map to DeepL source `pt`.
  */
 const SUPPORTED_SPEECH_LANGUAGES = [
-  'en', 'fr', 'ru', 'es', 'de', 'pl',
+  'en', 'fr', 'ru', 'es', 'de', 'pl', 'it',
   'zh', // Mandarin / Chinese (incl. Traditional → zh)
   'pt', // Portuguese + Brazilian Portuguese
   'ms', // Malay (Malaysian)
   'vi', // Vietnamese
   'th', // Thai
   'ko', // Korean
+  // Former Yugoslavia (+ Kosovo Albanian)
+  'sr', // Serbian (also used for Montenegrin speech)
+  'hr', // Croatian
+  'bs', // Bosnian
+  'sl', // Slovenian
+  'mk', // Macedonian
+  'sq', // Albanian (Kosovo / region)
 ];
 
 /** Map Deepgram / BCP-47 style codes → DeepL source language codes. */
@@ -98,6 +107,7 @@ const DEEPL_SOURCE_BY_HINT = {
   es: 'es', spanish: 'es',
   de: 'de', german: 'de',
   pl: 'pl', polish: 'pl',
+  it: 'it', italian: 'it',
   // Chinese — Mandarin / Simplified / Traditional / Cantonese→still zh for DeepL text source
   zh: 'zh',
   'zh-cn': 'zh',
@@ -124,6 +134,15 @@ const DEEPL_SOURCE_BY_HINT = {
   vi: 'vi', vietnamese: 'vi',
   th: 'th', thai: 'th',
   ko: 'ko', korean: 'ko',
+  // Ex-Yugoslavia
+  sr: 'sr', serbian: 'sr',
+  'sr-rs': 'sr', 'sr-me': 'sr',
+  cnr: 'sr', montenegrin: 'sr', // Montenegrin → Serbian for DeepL
+  hr: 'hr', croatian: 'hr',
+  bs: 'bs', bosnian: 'bs',
+  sl: 'sl', slovenian: 'sl', slovene: 'sl',
+  mk: 'mk', macedonian: 'mk',
+  sq: 'sq', albanian: 'sq', // Kosovo / regional Albanian
 };
 
 let clientRef = null;
