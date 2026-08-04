@@ -7,6 +7,7 @@
  * PT (Portuguese/Brazilian), MS (Malay), VI, TH, KO,
  * SR/HR/BS/SL/MK (ex-Yugoslavia) + SQ (Albanian/Kosovo), Montenegrin→SR —
  * plus DeepL auto-detect fallback.
+ * English speech → RU, FR, ES, DE, PL TTS (MIDLAND_VOICE_EN_TARGETS).
  */
 const fs = require('fs');
 const path = require('path');
@@ -73,9 +74,50 @@ const ENABLED = Boolean(
   && MIDLAND_TRANSLATOR_ROLE_IDS.size > 0,
 );
 
-/** DeepL target English (American). Source auto-detect when unmapped. */
-const DEEPL_TARGET = 'en-US';
+/** DeepL target English (American) for non-English speech. */
+const DEEPL_TARGET_EN = 'en-US';
 const ENGLISH_LANG_CODES = new Set(['en', 'en-us', 'en-gb', 'en-au', 'en-in', 'english']);
+
+/**
+ * When Leaders/Officers speak English, translate into these languages and speak each
+ * (DeepL target codes). Override with MIDLAND_VOICE_EN_TARGETS=ru,fr,es,de,pl
+ */
+const EN_TO_TARGET_LANGS = String(process.env.MIDLAND_VOICE_EN_TARGETS || 'ru,fr,es,de,pl')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+const DEEPL_TARGET_BY_CODE = {
+  ru: 'ru',
+  fr: 'fr',
+  es: 'es',
+  de: 'de',
+  pl: 'pl',
+  it: 'it',
+  pt: 'pt-BR',
+  'pt-br': 'pt-BR',
+  'pt-pt': 'pt-PT',
+  zh: 'zh-Hans',
+  'zh-hans': 'zh-Hans',
+  'zh-hant': 'zh-Hant',
+  ro: 'ro',
+  ko: 'ko',
+  vi: 'vi',
+  th: 'th',
+  ms: 'ms',
+  uk: 'uk',
+  en: 'en-US',
+  'en-us': 'en-US',
+  'en-gb': 'en-GB',
+};
+
+const TARGET_LABEL = {
+  ru: 'Russian',
+  fr: 'French',
+  es: 'Spanish',
+  de: 'German',
+  pl: 'Polish',
+};
 
 /**
  * Languages we expect Leaders/Officers to speak in MIDLAND POWER.
@@ -351,35 +393,47 @@ async function transcribeWav(wavBuffer) {
   };
 }
 
-async function translateToEnglish(text, sourceLangHint) {
+async function translateText(text, sourceLangHint, targetCode) {
+  const target = DEEPL_TARGET_BY_CODE[String(targetCode || '').toLowerCase()] || targetCode;
+  if (!target) throw new Error(`Unsupported DeepL target: ${targetCode}`);
+
   const hint = String(sourceLangHint || '').toLowerCase().trim();
   let sourceLang = null;
-  if (hint && !ENGLISH_LANG_CODES.has(hint) && !/^en([-_]|$)/i.test(hint)) {
-    const base = hint.split(/[-_]/)[0];
-    sourceLang =
-      DEEPL_SOURCE_BY_HINT[hint]
-      || DEEPL_SOURCE_BY_HINT[base]
-      || null;
+  if (hint) {
+    if (ENGLISH_LANG_CODES.has(hint) || /^en([-_]|$)/i.test(hint)) {
+      sourceLang = 'en';
+    } else {
+      const base = hint.split(/[-_]/)[0];
+      sourceLang =
+        DEEPL_SOURCE_BY_HINT[hint]
+        || DEEPL_SOURCE_BY_HINT[base]
+        || null;
+    }
   }
-  // DeepL: null source = auto-detect (covers edge cases / new Deepgram labels)
+
   try {
-    const result = await deeplClient.translateText(text, sourceLang, DEEPL_TARGET);
+    const result = await deeplClient.translateText(text, sourceLang, target);
     return {
       text: String(result.text || '').trim(),
       detectedSource: String(result.detectedSourceLang || sourceLang || '').toLowerCase(),
+      target: String(targetCode || '').toLowerCase(),
     };
   } catch (err) {
-    // If an explicit source code is rejected (e.g. beta MS on some plans), retry with auto-detect.
     if (sourceLang) {
-      warn(`DeepL source "${sourceLang}" failed (${err.message}); retrying auto-detect`);
-      const result = await deeplClient.translateText(text, null, DEEPL_TARGET);
+      warn(`DeepL ${sourceLang}→${target} failed (${err.message}); retrying auto-detect source`);
+      const result = await deeplClient.translateText(text, null, target);
       return {
         text: String(result.text || '').trim(),
         detectedSource: String(result.detectedSourceLang || '').toLowerCase(),
+        target: String(targetCode || '').toLowerCase(),
       };
     }
     throw err;
   }
+}
+
+async function translateToEnglish(text, sourceLangHint) {
+  return translateText(text, sourceLangHint, 'en-us');
 }
 
 function toNodeReadable(audio) {
@@ -389,11 +443,10 @@ function toNodeReadable(audio) {
   if (typeof Readable.fromWeb === 'function' && audio.getReader) {
     return Readable.fromWeb(audio);
   }
-  // Async iterable / array of chunks
   return Readable.from(audio);
 }
 
-async function synthesizeEnglish(text) {
+async function synthesizeSpeech(text) {
   const audio = await eleven.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
     text,
     model_id: ELEVENLABS_MODEL_ID,
@@ -413,6 +466,11 @@ async function playInConnection(connection, audioReadable) {
   playing = false;
 }
 
+function isEnglishLang(code) {
+  const c = String(code || '').toLowerCase();
+  return ENGLISH_LANG_CODES.has(c) || /^en([-_]|$)/i.test(c);
+}
+
 async function processUtterance({ guild, userId, pcm }) {
   if (!pcm || pcm.length < MIN_PCM_BYTES) {
     debug(`Skip short utterance from ${userId} (${pcm?.length || 0} bytes)`);
@@ -428,38 +486,67 @@ async function processUtterance({ guild, userId, pcm }) {
 
   log(`STT ${userId}: [${language || '?'}] ${transcript.slice(0, 160)}`);
 
-  if (ENGLISH_LANG_CODES.has(language) || /^en\b/i.test(language)) {
-    debug('Speaker already in English — skip TTS echo');
-    return;
-  }
-
-  const { text: english, detectedSource } = await translateToEnglish(transcript, language);
-  if (!english) {
-    debug('Empty translation');
-    return;
-  }
-
-  // If DeepL says source was English, skip playback
-  if (ENGLISH_LANG_CODES.has(detectedSource) || detectedSource === 'en') {
-    debug('DeepL detected English — skip TTS');
-    return;
-  }
-
-  // Near-identical to transcript → likely already English
-  if (english.toLowerCase() === transcript.toLowerCase()) {
-    debug('Translation identical to source — skip TTS');
-    return;
-  }
-
-  log(`EN ${userId}: ${english.slice(0, 160)}`);
-
   const connection = getVoiceConnection(guild.id);
   if (!connection) {
     warn('No voice connection; skip playback');
     return;
   }
 
-  const ttsStream = await synthesizeEnglish(english);
+  // English → RU / FR / ES / DE / PL (speak each translation)
+  if (isEnglishLang(language)) {
+    if (EN_TO_TARGET_LANGS.length === 0) {
+      debug('English speech but MIDLAND_VOICE_EN_TARGETS empty — skip');
+      return;
+    }
+    for (const target of EN_TO_TARGET_LANGS) {
+      try {
+        const { text: translated } = await translateText(transcript, 'en', target);
+        if (!translated || translated.toLowerCase() === transcript.toLowerCase()) {
+          debug(`Skip empty/identical EN→${target}`);
+          continue;
+        }
+        const label = TARGET_LABEL[target] || target.toUpperCase();
+        log(`EN→${target.toUpperCase()} (${label}) ${userId}: ${translated.slice(0, 120)}`);
+        const ttsStream = await synthesizeSpeech(translated);
+        await playInConnection(connection, ttsStream);
+      } catch (err) {
+        warn(`EN→${target} failed:`, err.message || err);
+      }
+    }
+    return;
+  }
+
+  // Non-English → English
+  const { text: english, detectedSource } = await translateToEnglish(transcript, language);
+  if (!english) {
+    debug('Empty translation');
+    return;
+  }
+
+  if (isEnglishLang(detectedSource)) {
+    // DeepL thinks source was English — treat as EN→targets path
+    if (EN_TO_TARGET_LANGS.length === 0) return;
+    for (const target of EN_TO_TARGET_LANGS) {
+      try {
+        const { text: translated } = await translateText(transcript, 'en', target);
+        if (!translated || translated.toLowerCase() === transcript.toLowerCase()) continue;
+        log(`EN→${target.toUpperCase()} ${userId}: ${translated.slice(0, 120)}`);
+        const ttsStream = await synthesizeSpeech(translated);
+        await playInConnection(connection, ttsStream);
+      } catch (err) {
+        warn(`EN→${target} failed:`, err.message || err);
+      }
+    }
+    return;
+  }
+
+  if (english.toLowerCase() === transcript.toLowerCase()) {
+    debug('Translation identical to source — skip TTS');
+    return;
+  }
+
+  log(`→EN ${userId}: ${english.slice(0, 160)}`);
+  const ttsStream = await synthesizeSpeech(english);
   await playInConnection(connection, ttsStream);
 }
 
@@ -689,6 +776,7 @@ async function init(client) {
   );
   log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → ElevenLabs(${ELEVENLABS_VOICE_ID})`);
   log(`Speech languages: ${SUPPORTED_SPEECH_LANGUAGES.join(', ')} (+ auto-detect fallback)`);
+  log(`English → speak: ${EN_TO_TARGET_LANGS.join(', ') || '(none)'}`);
 
   try {
     const guild = await client.guilds.fetch(MIDLAND_EU_GUILD_ID);
