@@ -245,8 +245,10 @@ async function countApprovedSpeakersInChannel(guild, channelId) {
   return n;
 }
 
-const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2000', 10) || 2000);
+const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2500', 10) || 2500);
 let leaveTimer = null;
+let joinPromise = null; // serialize joins — duplicate joinVoiceChannel thrashing disconnects the bot
+let intentionalLeave = false;
 
 function cancelScheduledLeave() {
   if (leaveTimer) {
@@ -261,12 +263,16 @@ function scheduleLeaveIfStillEmpty(guild) {
     leaveTimer = null;
     void (async () => {
       try {
-        const approved = await countApprovedSpeakersInChannel(guild, MIDLAND_EU_VOICE_CHANNEL_ID);
+        // Fresh guild fetch so voiceStates are not stale after someone moved.
+        const fresh = await guild.client.guilds.fetch(guild.id).catch(() => guild);
+        const approved = await countApprovedSpeakersInChannel(fresh, MIDLAND_EU_VOICE_CHANNEL_ID);
         if (approved > 0) {
-          log(`Stay in booth — ${approved} Leader/Officer still present`);
+          log(`Stay in booth — ${approved} Leader/Officer still present (leave cancelled)`);
+          const conn = getVoiceConnection(fresh.id);
+          if (!conn) await joinMidlandPower(fresh);
           return;
         }
-        await leaveMidlandPower(guild.id);
+        await leaveMidlandPower(fresh.id);
       } catch (err) {
         warn('Debounced leave failed:', err.message || err);
       }
@@ -516,50 +522,93 @@ function attachReceiver(connection, guild) {
 async function joinMidlandPower(guild) {
   if (!ensureClients()) return null;
 
-  const existing = getVoiceConnection(guild.id);
-  if (existing) {
-    attachReceiver(existing, guild);
-    existing.subscribe(audioPlayer);
-    return existing;
-  }
+  // One join at a time — parallel joinVoiceChannel creates competing sessions and Discord drops the bot.
+  if (joinPromise) return joinPromise;
 
-  const channel = await guild.channels.fetch(MIDLAND_EU_VOICE_CHANNEL_ID).catch(() => null);
-  if (!channel || !channel.isVoiceBased?.()) {
-    warn(`MIDLAND POWER channel not found: ${MIDLAND_EU_VOICE_CHANNEL_ID}`);
-    return null;
-  }
-
-  const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
-    selfDeaf: false, // required to receive audio
-    selfMute: false,
-  });
-
-  connection.on('error', (err) => warn('Voice connection error:', err.message || err));
-
-  try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-  } catch (err) {
-    warn('Voice connection failed to become Ready:', err.message || err);
+  joinPromise = (async () => {
     try {
-      connection.destroy();
-    } catch {
-      /* ignore */
-    }
-    return null;
-  }
+      const existing = getVoiceConnection(guild.id);
+      if (existing) {
+        const status = existing.state.status;
+        if (
+          status === VoiceConnectionStatus.Ready
+          || status === VoiceConnectionStatus.Connecting
+          || status === VoiceConnectionStatus.Signalling
+        ) {
+          if (existing.joinConfig?.channelId === MIDLAND_EU_VOICE_CHANNEL_ID) {
+            attachReceiver(existing, guild);
+            existing.subscribe(audioPlayer);
+            return existing;
+          }
+        }
+        try {
+          existing.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
 
-  attachReceiver(connection, guild);
-  connection.subscribe(audioPlayer);
-  log(`Joined MIDLAND POWER (${MIDLAND_EU_VOICE_CHANNEL_ID})`);
-  return connection;
+      const channel = await guild.channels.fetch(MIDLAND_EU_VOICE_CHANNEL_ID).catch(() => null);
+      if (!channel || !channel.isVoiceBased?.()) {
+        warn(`MIDLAND POWER channel not found: ${MIDLAND_EU_VOICE_CHANNEL_ID}`);
+        return null;
+      }
+
+      intentionalLeave = false;
+      const connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: false, // required to receive audio
+        selfMute: false,
+      });
+
+      connection.on('error', (err) => warn('Voice connection error:', err.message || err));
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        if (intentionalLeave) return;
+        try {
+          const approved = await countApprovedSpeakersInChannel(guild, MIDLAND_EU_VOICE_CHANNEL_ID);
+          if (approved > 0) {
+            warn('Voice disconnected unexpectedly — rejoining (Leaders/Officers still present)');
+            cancelScheduledLeave();
+            setTimeout(() => {
+              void joinMidlandPower(guild);
+            }, 750);
+          }
+        } catch (err) {
+          warn('Reconnect check failed:', err.message || err);
+        }
+      });
+
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      } catch (err) {
+        warn('Voice connection failed to become Ready:', err.message || err);
+        try {
+          connection.destroy();
+        } catch {
+          /* ignore */
+        }
+        return null;
+      }
+
+      attachReceiver(connection, guild);
+      connection.subscribe(audioPlayer);
+      log(`Joined MIDLAND POWER (${MIDLAND_EU_VOICE_CHANNEL_ID})`);
+      return connection;
+    } finally {
+      joinPromise = null;
+    }
+  })();
+
+  return joinPromise;
 }
 
 async function leaveMidlandPower(guildId) {
+  cancelScheduledLeave();
   const connection = getVoiceConnection(guildId);
   if (!connection) return;
+  intentionalLeave = true;
   try {
     connection.destroy();
     log('Left MIDLAND POWER (no Leader/Officer remaining)');
@@ -592,8 +641,7 @@ async function reconcileMidlandVoice(guild) {
     return;
   }
 
-  // Zero Leader/Officer remaining — wait briefly, then leave only if still empty.
-  // (One officer leaving while others remain must NOT disconnect the bot.)
+  // Zero Leader/Officer remaining — wait, then leave only if still empty.
   if (connection || inTarget) {
     log('No Leader/Officer left in booth — scheduling leave check');
     scheduleLeaveIfStillEmpty(guild);
@@ -604,6 +652,15 @@ async function onVoiceStateUpdate(oldState, newState) {
   if (!ENABLED) return;
   const guild = newState.guild || oldState.guild;
   if (!guild || String(guild.id) !== MIDLAND_EU_GUILD_ID) return;
+
+  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
+  const changedUserId = String(newState.id || oldState.id || '');
+
+  // Bot's own join/move/disconnect must NOT drive leave/rejoin thrashing.
+  if (botId && changedUserId === botId) {
+    debug('Ignore bot own voiceStateUpdate');
+    return;
+  }
 
   const touched =
     oldState.channelId === MIDLAND_EU_VOICE_CHANNEL_ID
