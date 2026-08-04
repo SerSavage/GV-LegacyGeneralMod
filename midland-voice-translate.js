@@ -3,7 +3,7 @@
  * Deepgram (STT) → DeepL (translate → EN) → ElevenLabs (TTS) → Discord playback.
  * Only Guild Leader / Guild Officer roles are transcribed; everyone else is ignored.
  *
- * Supported speech → English: EN, FR, RU, ES, DE, PL, IT, ZH (Mandarin/Traditional),
+ * Supported speech → English: EN, FR, RU, RO, ES, DE, PL, IT, ZH (Mandarin/Traditional),
  * PT (Portuguese/Brazilian), MS (Malay), VI, TH, KO,
  * SR/HR/BS/SL/MK (ex-Yugoslavia) + SQ (Albanian/Kosovo), Montenegrin→SR —
  * plus DeepL auto-detect fallback.
@@ -84,7 +84,7 @@ const ENGLISH_LANG_CODES = new Set(['en', 'en-us', 'en-gb', 'en-au', 'en-in', 'e
  * Portuguese / Brazilian: both map to DeepL source `pt`.
  */
 const SUPPORTED_SPEECH_LANGUAGES = [
-  'en', 'fr', 'ru', 'es', 'de', 'pl', 'it',
+  'en', 'fr', 'ru', 'ro', 'es', 'de', 'pl', 'it',
   'zh', // Mandarin / Chinese (incl. Traditional → zh)
   'pt', // Portuguese + Brazilian Portuguese
   'ms', // Malay (Malaysian)
@@ -104,6 +104,7 @@ const SUPPORTED_SPEECH_LANGUAGES = [
 const DEEPL_SOURCE_BY_HINT = {
   fr: 'fr', french: 'fr',
   ru: 'ru', russian: 'ru',
+  ro: 'ro', romanian: 'ro',
   es: 'es', spanish: 'es',
   de: 'de', german: 'de',
   pl: 'pl', polish: 'pl',
