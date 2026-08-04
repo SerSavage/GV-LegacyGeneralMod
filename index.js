@@ -3233,6 +3233,8 @@ function buildTempVoiceName(member) {
 function isTrackedTempVoiceChannel(channel) {
   if (!channel || channel.type !== ChannelType.GuildVoice) return false;
   if (channel.id === TEMP_VOICE_TRIGGER_CHANNEL_ID) return false;
+  // Midland POWER booth is permanent — never auto-delete (temp-voice must not touch it).
+  if (String(channel.id) === String(midlandVoiceTranslate.MIDLAND_EU_VOICE_CHANNEL_ID || '')) return false;
   if (tempVoiceOwners.has(channel.id)) return true;
   return Boolean(resolveTempVoiceOwnerId(channel));
 }
@@ -3765,6 +3767,9 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   } catch (err) {
     console.error('[midland-voice] voiceStateUpdate failed:', err.message || err);
   }
+
+  // Temp-voice create/delete is GV-main only — never run on Midland EU.
+  if (!isGvMainGuild(newState.guild?.id || oldState.guild?.id)) return;
 
   if (shouldPauseTempVoiceActions()) return;
   const member = newState.member || oldState.member;

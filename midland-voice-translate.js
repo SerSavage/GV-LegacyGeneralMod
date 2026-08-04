@@ -39,7 +39,7 @@ try {
 
 const MIDLAND_EU_GUILD_ID = String(process.env.MIDLAND_EU_GUILD_ID || '1045040260268163194').trim();
 const MIDLAND_EU_VOICE_CHANNEL_ID = String(
-  process.env.MIDLAND_EU_VOICE_CHANNEL_ID || '1533873541663952957',
+  process.env.MIDLAND_EU_VOICE_CHANNEL_ID || '1534254030702776510',
 ).trim();
 const MIDLAND_TRANSLATOR_ROLE_IDS = new Set(
   String(
@@ -555,7 +555,7 @@ async function init(client) {
   clientRef = client;
   if (!ENABLED) {
     console.log(
-      '[midland-voice] Disabled — set DEEPGRAM_API_KEY, DEEPL_AUTH_KEY, ELEVENLABS_API_KEY to enable Midland POWER translation',
+      '[midland-voice] Disabled — set DEEPGRAM_API_KEY, DEEPL_AUTH_KEY, and ELEVENLABS_API_KEY on Render to enable Midland POWER auto-join + translation',
     );
     return;
   }
