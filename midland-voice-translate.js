@@ -204,20 +204,74 @@ async function memberHasTranslatorRole(guild, userId) {
   }
 }
 
+/**
+ * Count Guild Leader / Guild Officer humans currently in the booth.
+ * Uses voiceStates (not channel.members) so role cache limits don't under-count.
+ */
 async function countApprovedSpeakersInChannel(guild, channelId) {
-  const channel = await guild.channels.fetch(channelId).catch(() => null);
-  if (!channel || !channel.isVoiceBased?.()) return 0;
-  let n = 0;
-  for (const [, member] of channel.members) {
-    if (member.user?.bot) continue;
-    if (member.roles.cache.some((r) => MIDLAND_TRANSLATOR_ROLE_IDS.has(String(r.id)))) {
-      n += 1;
-      continue;
-    }
-    // Cache may be incomplete — fetch when not clearly approved
-    if (await memberHasTranslatorRole(guild, member.id)) n += 1;
+  const target = String(channelId);
+  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
+  const occupantIds = new Set();
+
+  for (const vs of guild.voiceStates.cache.values()) {
+    if (String(vs.channelId) !== target) continue;
+    const uid = String(vs.id);
+    if (botId && uid === botId) continue;
+    if (vs.member?.user?.bot) continue;
+    occupantIds.add(uid);
   }
+
+  // Fallback: channel.members if voiceStates empty but channel still has people (rare cache lag)
+  if (occupantIds.size === 0) {
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (channel?.members) {
+      for (const [id, member] of channel.members) {
+        if (botId && String(id) === botId) continue;
+        if (member.user?.bot) continue;
+        occupantIds.add(String(id));
+      }
+    }
+  }
+
+  let n = 0;
+  const approvedIds = [];
+  for (const uid of occupantIds) {
+    if (await memberHasTranslatorRole(guild, uid)) {
+      n += 1;
+      approvedIds.push(uid);
+    }
+  }
+  debug(`Approved Leader/Officer in booth: ${n} [${approvedIds.join(', ') || 'none'}] (occupants=${occupantIds.size})`);
   return n;
+}
+
+const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2000', 10) || 2000);
+let leaveTimer = null;
+
+function cancelScheduledLeave() {
+  if (leaveTimer) {
+    clearTimeout(leaveTimer);
+    leaveTimer = null;
+  }
+}
+
+function scheduleLeaveIfStillEmpty(guild) {
+  cancelScheduledLeave();
+  leaveTimer = setTimeout(() => {
+    leaveTimer = null;
+    void (async () => {
+      try {
+        const approved = await countApprovedSpeakersInChannel(guild, MIDLAND_EU_VOICE_CHANNEL_ID);
+        if (approved > 0) {
+          log(`Stay in booth — ${approved} Leader/Officer still present`);
+          return;
+        }
+        await leaveMidlandPower(guild.id);
+      } catch (err) {
+        warn('Debounced leave failed:', err.message || err);
+      }
+    })();
+  }, LEAVE_DEBOUNCE_MS);
 }
 
 function pcmToWav(pcmBuffer, { channels = 2, sampleRate = 48000, bitDepth = 16 } = {}) {
@@ -515,7 +569,8 @@ async function leaveMidlandPower(guildId) {
 }
 
 /**
- * Keep bot in MIDLAND POWER only while ≥1 Leader/Officer is present.
+ * Keep bot in MIDLAND POWER while ≥1 Guild Leader / Guild Officer is present.
+ * Leave only when the count of those roles in the booth drops to 0 (debounced).
  */
 async function reconcileMidlandVoice(guild) {
   if (!ENABLED || !guild || String(guild.id) !== MIDLAND_EU_GUILD_ID) return;
@@ -527,10 +582,21 @@ async function reconcileMidlandVoice(guild) {
     && connection.joinConfig?.channelId === MIDLAND_EU_VOICE_CHANNEL_ID;
 
   if (approved > 0) {
-    if (!inTarget) await joinMidlandPower(guild);
-    else attachReceiver(connection, guild);
-  } else if (connection) {
-    await leaveMidlandPower(guild.id);
+    cancelScheduledLeave();
+    if (!inTarget) {
+      log(`Join booth — ${approved} Leader/Officer present`);
+      await joinMidlandPower(guild);
+    } else {
+      attachReceiver(connection, guild);
+    }
+    return;
+  }
+
+  // Zero Leader/Officer remaining — wait briefly, then leave only if still empty.
+  // (One officer leaving while others remain must NOT disconnect the bot.)
+  if (connection || inTarget) {
+    log('No Leader/Officer left in booth — scheduling leave check');
+    scheduleLeaveIfStillEmpty(guild);
   }
 }
 
