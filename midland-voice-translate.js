@@ -78,10 +78,12 @@ const ELEVENLABS_API_KEY = String(process.env.ELEVENLABS_API_KEY || '').trim();
 const ELEVENLABS_VOICE_ID = String(
   process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL',
 ).trim();
-const ELEVENLABS_MODEL_ID = String(process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2').trim();
+const ELEVENLABS_MODEL_ID = String(
+  process.env.ELEVENLABS_MODEL_ID || 'eleven_flash_v2_5',
+).trim();
 const DEEPGRAM_MODEL = String(process.env.DEEPGRAM_MODEL || 'nova-3').trim();
 
-const SILENCE_END_MS = Math.max(400, parseInt(process.env.MIDLAND_VOICE_SILENCE_MS || '900', 10) || 900);
+const SILENCE_END_MS = Math.max(300, parseInt(process.env.MIDLAND_VOICE_SILENCE_MS || '550', 10) || 550);
 const MIN_PCM_BYTES = Math.max(48000, parseInt(process.env.MIDLAND_VOICE_MIN_PCM_BYTES || '96000', 10) || 96000);
 const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2500', 10) || 2500);
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
@@ -235,21 +237,27 @@ async function memberHasVerifiedRole(guild, userId) {
   return member.roles.cache.has(VERIFIED_ROLE_ID);
 }
 
-/**
- * True if the booth has at least one non-bot participant with the verified role.
- * Member cache is tiny on Render — always fetch roles when needed.
- */
-async function channelHasVerifiedParticipant(guild, channelId) {
+/** One pass over voice states → set of language booth IDs with a verified listener. */
+async function getVerifiedOccupiedChannelIds(guild) {
   const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
-  const target = String(channelId);
+  const occupied = new Set();
+  const pending = [];
+
   for (const vs of guild.voiceStates.cache.values()) {
-    if (String(vs.channelId || '') !== target) continue;
+    const chId = String(vs.channelId || '');
+    if (!LANG_CHANNEL_IDS.has(chId)) continue;
     const uid = String(vs.id);
     if (botId && uid === botId) continue;
     if (vs.member?.user?.bot) continue;
-    if (await memberHasVerifiedRole(guild, uid)) return true;
+    pending.push(
+      (async () => {
+        if (await memberHasVerifiedRole(guild, uid)) occupied.add(chId);
+      })(),
+    );
   }
-  return false;
+
+  await Promise.all(pending);
+  return occupied;
 }
 
 /**
@@ -463,38 +471,43 @@ async function postTextToChannel(guild, channelId, content) {
 
 async function joinChannel(guild, channelId) {
   if (!ensureClients()) return null;
-  if (joinPromise) return joinPromise;
+
+  // Serialize joins; wait out an in-flight join for a different channel, then proceed
+  while (joinPromise) {
+    await joinPromise.catch(() => null);
+  }
+
+  const wantId = String(channelId);
+  const already = getVoiceConnection(guild.id);
+  if (
+    already
+    && already.joinConfig?.channelId === wantId
+    && (already.state.status === VoiceConnectionStatus.Ready
+      || already.state.status === VoiceConnectionStatus.Connecting
+      || already.state.status === VoiceConnectionStatus.Signalling)
+  ) {
+    already.subscribe(audioPlayer);
+    if (already.state.status === VoiceConnectionStatus.Ready) return already;
+    try {
+      await entersState(already, VoiceConnectionStatus.Ready, 20_000);
+      return already;
+    } catch (err) {
+      warn('Existing voice Ready failed:', err.message || err);
+    }
+  }
 
   joinPromise = (async () => {
     try {
-      const existing = getVoiceConnection(guild.id);
-      if (existing) {
-        const status = existing.state.status;
-        if (
-          (status === VoiceConnectionStatus.Ready
-            || status === VoiceConnectionStatus.Connecting
-            || status === VoiceConnectionStatus.Signalling)
-          && existing.joinConfig?.channelId === String(channelId)
-        ) {
-          existing.subscribe(audioPlayer);
-          return existing;
-        }
-        // Mark intentional so channel hops during TTS are not treated as kicks
-        intentionalLeave = true;
-        try {
-          existing.destroy();
-        } catch {
-          /* ignore */
-        }
-      }
-
-      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      const channel = await guild.channels.fetch(wantId).catch(() => null);
       if (!channel || !channel.isVoiceBased?.()) {
-        warn(`Voice channel not found: ${channelId}`);
+        warn(`Voice channel not found: ${wantId}`);
         return null;
       }
 
-      intentionalLeave = false;
+      // Treat hops as intentional until Ready — avoids false "kick" suppress
+      intentionalLeave = true;
+
+      // Prefer move (re-join) over destroy+recreate — fewer disconnect races
       const connection = joinVoiceChannel({
         channelId: channel.id,
         guildId: guild.id,
@@ -503,6 +516,9 @@ async function joinChannel(guild, channelId) {
         selfMute: false,
       });
 
+      // Avoid stacking handlers on repeated moves of the same connection
+      connection.removeAllListeners('error');
+      connection.removeAllListeners(VoiceConnectionStatus.Disconnected);
       connection.on('error', (err) => warn('Voice connection error:', err.message || err));
       connection.on(VoiceConnectionStatus.Disconnected, async () => {
         if (intentionalLeave || suppressAutoJoinAfterKick || delivering) return;
@@ -512,9 +528,11 @@ async function joinChannel(guild, channelId) {
             warn('Voice disconnected unexpectedly — rejoining shotcaller booth');
             cancelScheduledLeave();
             setTimeout(() => {
-              if (!suppressAutoJoinAfterKick) void joinChannel(guild, sc.channelId).then((c) => {
-                if (c) attachReceiver(c, guild);
-              });
+              if (!suppressAutoJoinAfterKick && !delivering) {
+                void joinChannel(guild, sc.channelId).then((c) => {
+                  if (c) attachReceiver(c, guild);
+                });
+              }
             }, 750);
           }
         } catch (err) {
@@ -526,6 +544,7 @@ async function joinChannel(guild, channelId) {
         await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
       } catch (err) {
         warn('Voice Ready failed:', err.message || err);
+        intentionalLeave = false;
         try {
           connection.destroy();
         } catch {
@@ -534,8 +553,9 @@ async function joinChannel(guild, channelId) {
         return null;
       }
 
+      intentionalLeave = false;
       connection.subscribe(audioPlayer);
-      log(`Joined voice ${LANG_BY_CHANNEL.get(String(channelId)) || '?'} (${channelId})`);
+      log(`Joined voice ${LANG_BY_CHANNEL.get(wantId) || '?'} (${wantId})`);
       return connection;
     } finally {
       joinPromise = null;
@@ -596,77 +616,105 @@ function startListeningToUser(connection, guild, userId) {
  * Never echo into the shotcaller's current booth, and never send same-language
  * (e.g. English→English) text/TTS — only real translations for other booths
  * that have ≥1 verified participant. Then return to the shotcaller.
+ *
+ * Translate / chat / TTS synth run in parallel for speed; Discord VC TTS tour
+ * must stay sequential (one channel per guild).
  */
 async function relayShotcall(guild, userId, transcript, sourceLang) {
+  const t0 = Date.now();
   const src = normalizeLang(sourceLang) || 'en';
   const sc = await findActiveShotcaller(guild);
   const homeId = sc?.channelId || getVoiceConnection(guild.id)?.joinConfig?.channelId || null;
   const homeLang = homeId ? (LANG_BY_CHANNEL.get(String(homeId)) || '') : '';
   homeChannelIdWhileDelivering = homeId;
 
-  const payloads = [];
+  const candidates = [];
   for (const lang of EVENT_LANGS) {
     const channelId = CHANNEL_BY_LANG[lang];
     if (!channelId) continue;
-
-    // Never relay into the booth the shotcaller is sitting in
     if (homeId && String(channelId) === String(homeId)) {
       debug(`Skip ${lang} — shotcaller is in this booth`);
       continue;
     }
-    // Never same-language echo (EN→EN, RU→RU, …)
     if (lang === src) {
       debug(`Skip ${lang} — source language (no translate needed)`);
       continue;
     }
-    // Belt-and-suspenders: also skip home booth language code
     if (homeLang && lang === homeLang) {
       debug(`Skip ${lang} — shotcaller booth language`);
       continue;
     }
-
-    let text = '';
-    try {
-      const { text: translated } = await translateText(transcript, src, lang);
-      text = String(translated || '').trim();
-    } catch (err) {
-      warn(`Translate ${src}→${lang} failed:`, err.message || err);
-      continue;
-    }
-    if (!text) continue;
-
-    const hasAudience = await channelHasVerifiedParticipant(guild, channelId);
-    if (!hasAudience) {
-      debug(`Skip ${lang} — no verified participants`);
-      continue;
-    }
-
-    payloads.push({ lang, channelId, text });
+    candidates.push({ lang, channelId });
   }
 
-  if (!payloads.length) {
+  if (!candidates.length) {
+    log(`No relay candidates for ${src}`);
+    homeChannelIdWhileDelivering = null;
+    return;
+  }
+
+  // One audience scan, then filter candidates
+  const occupied = await getVerifiedOccupiedChannelIds(guild);
+  const withAudience = candidates.filter((c) => {
+    const ok = occupied.has(String(c.channelId));
+    if (!ok) debug(`Skip ${c.lang} — no verified participants`);
+    return ok;
+  });
+
+  if (!withAudience.length) {
     log(`No relay targets for ${src} (other booths need verified listeners)`);
     homeChannelIdWhileDelivering = null;
     return;
   }
 
-  for (const p of payloads) {
-    const label = LANG_LABEL[p.lang] || p.lang;
-    const header = `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
-    await postTextToChannel(guild, p.channelId, `${header}\n${p.text}`);
-    log(`Chat ${src}→${p.lang} @ ${p.channelId}: ${p.text.slice(0, 100)}`);
+  // Translations in parallel
+  const translated = await Promise.all(
+    withAudience.map(async (c) => {
+      try {
+        const { text } = await translateText(transcript, src, c.lang);
+        const trimmed = String(text || '').trim();
+        if (!trimmed) return null;
+        return { ...c, text: trimmed };
+      } catch (err) {
+        warn(`Translate ${src}→${c.lang} failed:`, err.message || err);
+        return null;
+      }
+    }),
+  );
+  const payloads = translated.filter(Boolean);
+
+  if (!payloads.length) {
+    log(`No translations produced for ${src}`);
+    homeChannelIdWhileDelivering = null;
+    return;
   }
 
-  // Pre-synthesize while still in the shotcaller booth
-  for (const p of payloads) {
-    try {
-      p.mp3 = await synthesizeSpeechBuffer(p.text);
-      log(`TTS ready ${p.lang}: ${p.mp3.length} bytes`);
-    } catch (err) {
-      warn(`TTS synth ${p.lang} failed:`, err.message || err);
-      p.mp3 = null;
-    }
-  }
+  log(`Relay ${src} → ${payloads.map((p) => p.lang).join(',')} (${Date.now() - t0}ms to translate)`);
+
+  // Chat posts + TTS synth in parallel (text reaches booths ASAP)
+  await Promise.all([
+    Promise.all(
+      payloads.map(async (p) => {
+        const label = LANG_LABEL[p.lang] || p.lang;
+        const header = `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
+        await postTextToChannel(guild, p.channelId, `${header}\n${p.text}`);
+        log(`Chat ${src}→${p.lang} @ ${p.channelId}: ${p.text.slice(0, 100)}`);
+      }),
+    ),
+    Promise.all(
+      payloads.map(async (p) => {
+        try {
+          p.mp3 = await synthesizeSpeechBuffer(p.text);
+          log(`TTS ready ${p.lang}: ${p.mp3.length} bytes`);
+        } catch (err) {
+          warn(`TTS synth ${p.lang} failed:`, err.message || err);
+          p.mp3 = null;
+        }
+      }),
+    ),
+  ]);
+
+  log(`Text+TTS synth done in ${Date.now() - t0}ms`);
 
   delivering = true;
   try {
@@ -687,13 +735,33 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
       }
     }
   } finally {
-    delivering = false;
-    if (homeId && !suppressAutoJoinAfterKick) {
-      log(`TTS tour done — returning to shotcaller booth ${homeId}`);
-      const conn = await joinChannel(guild, homeId);
-      if (conn) attachReceiver(conn, guild);
+    // Keep delivering=true until we are back with the shotcaller so VSU cannot
+    // treat the hop as a kick and block rejoin via suppressAutoJoinAfterKick.
+    try {
+      const returnId =
+        homeId
+        || (await findActiveShotcaller(guild))?.channelId
+        || null;
+      if (returnId) {
+        suppressAutoJoinAfterKick = false;
+        log(`TTS tour done — returning to shotcaller booth ${returnId}`);
+        const conn = await joinChannel(guild, returnId);
+        if (conn) {
+          attachReceiver(conn, guild);
+          log(`Back with shotcaller in ${LANG_BY_CHANNEL.get(String(returnId)) || returnId}`);
+        } else {
+          warn(`Failed to return to shotcaller booth ${returnId}`);
+        }
+      } else {
+        warn('TTS tour done — no shotcaller booth to return to');
+      }
+    } catch (err) {
+      warn('Return to shotcaller failed:', err.message || err);
+    } finally {
+      delivering = false;
+      homeChannelIdWhileDelivering = null;
+      log(`Relay complete in ${Date.now() - t0}ms`);
     }
-    homeChannelIdWhileDelivering = null;
   }
 }
 
@@ -785,6 +853,7 @@ async function onVoiceStateUpdate(oldState, newState) {
     const leftLangBooth =
       LANG_CHANNEL_IDS.has(String(oldState.channelId || ''))
       && !LANG_CHANNEL_IDS.has(String(newState.channelId || ''));
+    // Ignore intentional TTS hops / leaves; only real removals suppress rejoin
     if (leftLangBooth && !intentionalLeave && !delivering) {
       suppressAutoJoinAfterKick = true;
       warn('Bot removed from language booth — will not auto-rejoin until shotcaller leaves all booths');
