@@ -84,7 +84,7 @@ const ELEVENLABS_MODEL_ID = String(
 const DEEPGRAM_MODEL = String(process.env.DEEPGRAM_MODEL || 'nova-3').trim();
 
 const SILENCE_END_MS = Math.max(300, parseInt(process.env.MIDLAND_VOICE_SILENCE_MS || '550', 10) || 550);
-const MIN_PCM_BYTES = Math.max(48000, parseInt(process.env.MIDLAND_VOICE_MIN_PCM_BYTES || '96000', 10) || 96000);
+const MIN_PCM_BYTES = Math.max(32000, parseInt(process.env.MIDLAND_VOICE_MIN_PCM_BYTES || '64000', 10) || 64000);
 const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2500', 10) || 2500);
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 
@@ -475,6 +475,20 @@ async function playInConnection(connection, mp3Buffer) {
   }
 }
 
+async function postTextToChannel(guild, channelId, content) {
+  try {
+    const ch = await guild.channels.fetch(channelId).catch(() => null);
+    if (!ch || !ch.isTextBased?.()) {
+      warn(`Cannot post text to ${channelId}`);
+      return;
+    }
+    const body = content.length > 1900 ? `${content.slice(0, 1897)}...` : content;
+    await ch.send({ content: body, allowedMentions: { parse: [] } });
+  } catch (err) {
+    warn(`Text post to ${channelId} failed:`, err.message || err);
+  }
+}
+
 /** Confirm the bot's Discord voice state is in the target channel (joinConfig alone is not enough). */
 async function waitUntilBotInChannel(guild, channelId, timeoutMs = 12_000) {
   const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
@@ -786,7 +800,8 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
 
   log(`Relay ${src} → ${payloads.map((p) => p.lang).join(',')} (${Date.now() - t0}ms to translate)`);
 
-  // Chat posts + TTS synth in parallel (text reaches booths ASAP)
+  // Chat posts + TTS synth in parallel (text reaches booths ASAP).
+  // Keep them independent so a TTS failure never blocks chat delivery.
   await Promise.all([
     Promise.all(
       payloads.map(async (p) => {
@@ -802,19 +817,30 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
           p.mp3 = await synthesizeSpeechBuffer(p.text);
           log(`TTS ready ${p.lang}: ${p.mp3.length} bytes`);
         } catch (err) {
-          warn(`TTS synth ${p.lang} failed:`, err.message || err);
+          const body = err?.body ? ` body=${JSON.stringify(err.body).slice(0, 200)}` : '';
+          warn(`TTS synth ${p.lang} failed:`, `${err.message || err}${body}`);
+          if (/401|unauthorized|invalid/i.test(String(err.message || ''))) {
+            warn('ElevenLabs 401 — check ELEVENLABS_API_KEY on Render (valid key from elevenlabs.io)');
+          }
           p.mp3 = null;
         }
       }),
     ),
   ]);
 
-  log(`Text+TTS synth done in ${Date.now() - t0}ms`);
+  const speakable = payloads.filter((p) => p.mp3);
+  if (!speakable.length) {
+    warn('No TTS audio ready — text was sent; skipping voice tour');
+    homeChannelIdWhileDelivering = null;
+    log(`Relay complete in ${Date.now() - t0}ms (text only)`);
+    return;
+  }
+
+  log(`Text+TTS synth done in ${Date.now() - t0}ms (${speakable.length} voice targets)`);
 
   delivering = true;
   try {
-    for (const p of payloads) {
-      if (!p.mp3) continue;
+    for (const p of speakable) {
       try {
         log(`TTS join ${p.lang} (${p.channelId})`);
         const conn = await joinChannel(guild, p.channelId);
@@ -982,7 +1008,8 @@ async function init(client) {
   log(`Enabled — guild ${MIDLAND_EU_GUILD_ID}; shotcaller role ${SHOTCALLER_ROLE_ID}`);
   log(`Verified audience role ${VERIFIED_ROLE_ID} (MIDLAND_VERIFYED_ROLE_ID) — text+TTS only to occupied booths`);
   log(`Language booths: ${EVENT_LANGS.map((l) => `${l}=${CHANNEL_BY_LANG[l]}`).join(', ')}`);
-  log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → chat+TTS ElevenLabs(${ELEVENLABS_VOICE_ID})`);
+  log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → chat+TTS ElevenLabs(${ELEVENLABS_VOICE_ID} / ${ELEVENLABS_MODEL_ID})`);
+  log(`ElevenLabs key: ${ELEVENLABS_API_KEY ? `set (len=${ELEVENLABS_API_KEY.length})` : 'MISSING'}`);
   log('Kick = no auto-rejoin until shotcaller clears booths; unexpected disconnect = rejoin');
   try {
     const report = generateDependencyReport();
