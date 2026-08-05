@@ -1,16 +1,17 @@
 /**
- * Midland EU — MIDLAND POWER voice booth translation.
- * Deepgram (STT) → DeepL (translate → EN) → ElevenLabs (TTS) → Discord playback.
- * Only Guild Leader / Guild Officer roles are transcribed; everyone else is ignored.
+ * Midland EU — multi-language voice booths + shotcaller relay.
  *
- * Supported speech → English: EN, FR, RU, RO, ES, DE, PL, IT, ZH (Mandarin/Traditional),
- * PT (Portuguese/Brazilian), MS (Malay), VI, TH, KO,
- * SR/HR/BS/SL/MK (ex-Yugoslavia) + SQ (Albanian/Kosovo), Montenegrin→SR —
- * plus DeepL auto-detect fallback.
- * English speech → RU, FR, ES, DE, PL TTS (MIDLAND_VOICE_EN_TARGETS).
+ * Shotcaller (role) speaks in any language booth → STT → translate to every
+ * other booth language → post text in each voice-channel chat + TTS spoken
+ * by the bot (visits each channel; Discord allows one VC per guild).
+ *
+ * Languages / channels: EN, RU, DE, PL, FR, ES, PT, ZH, IT (both directions).
+ * Only the shotcaller role is listened to (Leaders/Officers removed).
+ *
+ * Kick: do not auto-rejoin. Unexpected voice disconnect: rejoin if shotcaller
+ * still in a booth and we were not kicked / intentionally left.
  */
 const fs = require('fs');
-const path = require('path');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const {
@@ -28,7 +29,6 @@ const { DeepgramClient } = require('@deepgram/sdk');
 const deepl = require('deepl-node');
 const { ElevenLabsClient } = require('elevenlabs');
 
-// Prefer bundled ffmpeg for TTS decode on Render / local.
 try {
   const ffmpegPath = require('ffmpeg-static');
   if (ffmpegPath && fs.existsSync(ffmpegPath)) {
@@ -39,30 +39,42 @@ try {
 }
 
 const MIDLAND_EU_GUILD_ID = String(process.env.MIDLAND_EU_GUILD_ID || '1045040260268163194').trim();
-const MIDLAND_EU_VOICE_CHANNEL_ID = String(
-  process.env.MIDLAND_EU_VOICE_CHANNEL_ID || '1534254030702776510',
+const SHOTCALLER_ROLE_ID = String(
+  process.env.MIDLAND_SHOTCALLER_ROLE_ID || '1534633764570009703',
 ).trim();
-const MIDLAND_TRANSLATOR_ROLE_IDS = new Set(
-  String(
-    process.env.MIDLAND_EU_TRANSLATOR_ROLE_IDS
-      || '1045066996259238020,1045067247875530834',
-  )
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean),
+
+/** lang code → Discord voice channel ID */
+const CHANNEL_BY_LANG = {
+  en: String(process.env.MIDLAND_VOICE_EN || '1534284673247613099').trim(),
+  ru: String(process.env.MIDLAND_VOICE_RU || '1534284963657289878').trim(),
+  de: String(process.env.MIDLAND_VOICE_DE || '1534285176362893463').trim(),
+  pl: String(process.env.MIDLAND_VOICE_PL || '1534285248517509250').trim(),
+  fr: String(process.env.MIDLAND_VOICE_FR || '1534285292616286218').trim(),
+  es: String(process.env.MIDLAND_VOICE_ES || '1534632851679744192').trim(),
+  pt: String(process.env.MIDLAND_VOICE_PT || '1534285484333731974').trim(),
+  zh: String(process.env.MIDLAND_VOICE_ZH || '1534285547923705927').trim(),
+  it: String(process.env.MIDLAND_VOICE_IT || '1534633326143340675').trim(),
+};
+
+const LANG_BY_CHANNEL = new Map(
+  Object.entries(CHANNEL_BY_LANG).map(([lang, id]) => [String(id), lang]),
 );
+const LANG_CHANNEL_IDS = new Set(Object.values(CHANNEL_BY_LANG).filter(Boolean));
+
+const EVENT_LANGS = Object.keys(CHANNEL_BY_LANG); // en, ru, de, pl, fr, es, pt, zh, it
 
 const DEEPGRAM_API_KEY = String(process.env.DEEPGRAM_API_KEY || '').trim();
 const DEEPL_AUTH_KEY = String(process.env.DEEPL_AUTH_KEY || process.env.DEEPL_API_KEY || '').trim();
 const ELEVENLABS_API_KEY = String(process.env.ELEVENLABS_API_KEY || '').trim();
 const ELEVENLABS_VOICE_ID = String(
-  process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL', // Sarah — clear English
+  process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL',
 ).trim();
 const ELEVENLABS_MODEL_ID = String(process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2').trim();
 const DEEPGRAM_MODEL = String(process.env.DEEPGRAM_MODEL || 'nova-3').trim();
 
 const SILENCE_END_MS = Math.max(400, parseInt(process.env.MIDLAND_VOICE_SILENCE_MS || '900', 10) || 900);
-const MIN_PCM_BYTES = Math.max(48000, parseInt(process.env.MIDLAND_VOICE_MIN_PCM_BYTES || '96000', 10) || 96000); // ~1s stereo 48k 16-bit
+const MIN_PCM_BYTES = Math.max(48000, parseInt(process.env.MIDLAND_VOICE_MIN_PCM_BYTES || '96000', 10) || 96000);
+const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2500', 10) || 2500);
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 
 const ENABLED = Boolean(
@@ -70,122 +82,53 @@ const ENABLED = Boolean(
   && DEEPL_AUTH_KEY
   && ELEVENLABS_API_KEY
   && MIDLAND_EU_GUILD_ID
-  && MIDLAND_EU_VOICE_CHANNEL_ID
-  && MIDLAND_TRANSLATOR_ROLE_IDS.size > 0,
+  && SHOTCALLER_ROLE_ID
+  && LANG_CHANNEL_IDS.size > 0,
 );
 
-/** DeepL target English (American) for non-English speech. */
-const DEEPL_TARGET_EN = 'en-US';
 const ENGLISH_LANG_CODES = new Set(['en', 'en-us', 'en-gb', 'en-au', 'en-in', 'english']);
 
-/**
- * When Leaders/Officers speak English, translate into these languages and speak each
- * (DeepL target codes). Override with MIDLAND_VOICE_EN_TARGETS=ru,fr,es,de,pl
- */
-const EN_TO_TARGET_LANGS = String(process.env.MIDLAND_VOICE_EN_TARGETS || 'ru,fr,es,de,pl')
-  .split(',')
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
 const DEEPL_TARGET_BY_CODE = {
+  en: 'en-US',
+  'en-us': 'en-US',
+  'en-gb': 'en-GB',
   ru: 'ru',
-  fr: 'fr',
-  es: 'es',
   de: 'de',
   pl: 'pl',
-  it: 'it',
+  fr: 'fr',
+  es: 'es',
   pt: 'pt-BR',
   'pt-br': 'pt-BR',
   'pt-pt': 'pt-PT',
   zh: 'zh-Hans',
   'zh-hans': 'zh-Hans',
   'zh-hant': 'zh-Hant',
-  ro: 'ro',
-  ko: 'ko',
-  vi: 'vi',
-  th: 'th',
-  ms: 'ms',
-  uk: 'uk',
-  en: 'en-US',
-  'en-us': 'en-US',
-  'en-gb': 'en-GB',
+  it: 'it',
 };
 
-const TARGET_LABEL = {
-  ru: 'Russian',
-  fr: 'French',
-  es: 'Spanish',
-  de: 'German',
-  pl: 'Polish',
-};
-
-/**
- * Languages we expect Leaders/Officers to speak in MIDLAND POWER.
- * Deepgram detects; DeepL translates → English; ElevenLabs speaks English.
- * Chinese: Mandarin + Traditional both map to DeepL source `zh` (DeepL does not split source variants).
- * Portuguese / Brazilian: both map to DeepL source `pt`.
- */
-const SUPPORTED_SPEECH_LANGUAGES = [
-  'en', 'fr', 'ru', 'ro', 'es', 'de', 'pl', 'it',
-  'zh', // Mandarin / Chinese (incl. Traditional → zh)
-  'pt', // Portuguese + Brazilian Portuguese
-  'ms', // Malay (Malaysian)
-  'vi', // Vietnamese
-  'th', // Thai
-  'ko', // Korean
-  // Former Yugoslavia (+ Kosovo Albanian)
-  'sr', // Serbian (also used for Montenegrin speech)
-  'hr', // Croatian
-  'bs', // Bosnian
-  'sl', // Slovenian
-  'mk', // Macedonian
-  'sq', // Albanian (Kosovo / region)
-];
-
-/** Map Deepgram / BCP-47 style codes → DeepL source language codes. */
 const DEEPL_SOURCE_BY_HINT = {
-  fr: 'fr', french: 'fr',
+  en: 'en', english: 'en',
   ru: 'ru', russian: 'ru',
-  ro: 'ro', romanian: 'ro',
-  es: 'es', spanish: 'es',
   de: 'de', german: 'de',
   pl: 'pl', polish: 'pl',
+  fr: 'fr', french: 'fr',
+  es: 'es', spanish: 'es',
+  pt: 'pt', 'pt-br': 'pt', 'pt-pt': 'pt', portuguese: 'pt', brazilian: 'pt',
+  zh: 'zh', 'zh-cn': 'zh', 'zh-tw': 'zh', 'zh-hans': 'zh', 'zh-hant': 'zh',
+  cmn: 'zh', mandarin: 'zh', chinese: 'zh',
   it: 'it', italian: 'it',
-  // Chinese — Mandarin / Simplified / Traditional / Cantonese→still zh for DeepL text source
-  zh: 'zh',
-  'zh-cn': 'zh',
-  'zh-tw': 'zh',
-  'zh-hk': 'zh',
-  'zh-hans': 'zh',
-  'zh-hant': 'zh',
-  cmn: 'zh',
-  mandarin: 'zh',
-  chinese: 'zh',
-  yue: 'zh',
-  // Portuguese — European + Brazilian
-  pt: 'pt',
-  'pt-pt': 'pt',
-  'pt-br': 'pt',
-  portuguese: 'pt',
-  brazilian: 'pt',
-  // Malay / Malaysian
-  ms: 'ms',
-  msa: 'ms',
-  malay: 'ms',
-  malaysian: 'ms',
-  // Vietnamese, Thai, Korean
-  vi: 'vi', vietnamese: 'vi',
-  th: 'th', thai: 'th',
-  ko: 'ko', korean: 'ko',
-  // Ex-Yugoslavia
-  sr: 'sr', serbian: 'sr',
-  'sr-rs': 'sr', 'sr-me': 'sr',
-  cnr: 'sr', montenegrin: 'sr', // Montenegrin → Serbian for DeepL
-  hr: 'hr', croatian: 'hr',
-  bs: 'bs', bosnian: 'bs',
-  sl: 'sl', slovenian: 'sl', slovene: 'sl',
-  mk: 'mk', macedonian: 'mk',
-  sq: 'sq', albanian: 'sq', // Kosovo / regional Albanian
+};
+
+const LANG_LABEL = {
+  en: 'English',
+  ru: 'Russian',
+  de: 'German',
+  pl: 'Polish',
+  fr: 'French',
+  es: 'Spanish',
+  pt: 'Portuguese',
+  zh: 'Chinese',
+  it: 'Italian',
 };
 
 let clientRef = null;
@@ -194,9 +137,17 @@ let deeplClient = null;
 let eleven = null;
 let audioPlayer = null;
 let playing = false;
-const activeListeners = new Set(); // userId currently being recorded
+let delivering = false; // touring language channels for TTS
+const activeListeners = new Set();
 const processQueue = [];
 let queueRunning = false;
+
+let leaveTimer = null;
+let joinPromise = null;
+let intentionalLeave = false;
+/** After a kick/force-remove, do not auto-join until shotcaller fully leaves all booths. */
+let suppressAutoJoinAfterKick = false;
+let homeChannelIdWhileDelivering = null;
 
 function log(...args) {
   console.log('[midland-voice]', ...args);
@@ -212,17 +163,34 @@ function isEnabled() {
   return ENABLED;
 }
 
+function isProtectedVoiceChannel(channelId) {
+  return LANG_CHANNEL_IDS.has(String(channelId));
+}
+
+function isEnglishLang(code) {
+  const c = String(code || '').toLowerCase();
+  return ENGLISH_LANG_CODES.has(c) || /^en([-_]|$)/i.test(c);
+}
+
+function normalizeLang(code) {
+  const c = String(code || '').toLowerCase().trim();
+  if (!c) return '';
+  if (isEnglishLang(c)) return 'en';
+  const base = c.split(/[-_]/)[0];
+  if (DEEPL_SOURCE_BY_HINT[c]) {
+    const mapped = DEEPL_SOURCE_BY_HINT[c];
+    return mapped === 'en' ? 'en' : mapped;
+  }
+  if (EVENT_LANGS.includes(base)) return base;
+  if (DEEPL_SOURCE_BY_HINT[base]) return DEEPL_SOURCE_BY_HINT[base];
+  return base;
+}
+
 function ensureClients() {
   if (!ENABLED) return false;
-  if (!deepgram) {
-    deepgram = new DeepgramClient({ apiKey: DEEPGRAM_API_KEY });
-  }
-  if (!deeplClient) {
-    deeplClient = new deepl.DeepLClient(DEEPL_AUTH_KEY);
-  }
-  if (!eleven) {
-    eleven = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY });
-  }
+  if (!deepgram) deepgram = new DeepgramClient({ apiKey: DEEPGRAM_API_KEY });
+  if (!deeplClient) deeplClient = new deepl.DeepLClient(DEEPL_AUTH_KEY);
+  if (!eleven) eleven = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY });
   if (!audioPlayer) {
     audioPlayer = createAudioPlayer();
     audioPlayer.on('error', (err) => {
@@ -236,62 +204,42 @@ function ensureClients() {
   return true;
 }
 
-async function memberHasTranslatorRole(guild, userId) {
+async function memberHasShotcallerRole(guild, userId) {
   try {
     const member = await guild.members.fetch(userId);
     if (!member || member.user?.bot) return false;
-    return member.roles.cache.some((r) => MIDLAND_TRANSLATOR_ROLE_IDS.has(String(r.id)));
+    return member.roles.cache.has(SHOTCALLER_ROLE_ID);
   } catch (err) {
-    debug(`Role fetch failed for ${userId}:`, err.message);
+    debug(`Shotcaller role fetch failed for ${userId}:`, err.message);
     return false;
   }
 }
 
 /**
- * Count Guild Leader / Guild Officer humans currently in the booth.
- * Uses voiceStates (not channel.members) so role cache limits don't under-count.
+ * Find the single shotcaller currently in any language booth.
+ * Returns { userId, channelId, lang } or null.
+ * If multiple (shouldn't happen), prefers first found and logs a warning.
  */
-async function countApprovedSpeakersInChannel(guild, channelId) {
-  const target = String(channelId);
+async function findActiveShotcaller(guild) {
   const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
-  const occupantIds = new Set();
+  const found = [];
 
   for (const vs of guild.voiceStates.cache.values()) {
-    if (String(vs.channelId) !== target) continue;
+    const chId = String(vs.channelId || '');
+    if (!LANG_CHANNEL_IDS.has(chId)) continue;
     const uid = String(vs.id);
     if (botId && uid === botId) continue;
     if (vs.member?.user?.bot) continue;
-    occupantIds.add(uid);
-  }
-
-  // Fallback: channel.members if voiceStates empty but channel still has people (rare cache lag)
-  if (occupantIds.size === 0) {
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-    if (channel?.members) {
-      for (const [id, member] of channel.members) {
-        if (botId && String(id) === botId) continue;
-        if (member.user?.bot) continue;
-        occupantIds.add(String(id));
-      }
+    if (await memberHasShotcallerRole(guild, uid)) {
+      found.push({ userId: uid, channelId: chId, lang: LANG_BY_CHANNEL.get(chId) || 'en' });
     }
   }
 
-  let n = 0;
-  const approvedIds = [];
-  for (const uid of occupantIds) {
-    if (await memberHasTranslatorRole(guild, uid)) {
-      n += 1;
-      approvedIds.push(uid);
-    }
+  if (found.length > 1) {
+    warn(`Multiple shotcallers in booths (${found.length}) — using ${found[0].userId}; only one allowed per event`);
   }
-  debug(`Approved Leader/Officer in booth: ${n} [${approvedIds.join(', ') || 'none'}] (occupants=${occupantIds.size})`);
-  return n;
+  return found[0] || null;
 }
-
-const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2500', 10) || 2500);
-let leaveTimer = null;
-let joinPromise = null; // serialize joins — duplicate joinVoiceChannel thrashing disconnects the bot
-let intentionalLeave = false;
 
 function cancelScheduledLeave() {
   if (leaveTimer) {
@@ -300,22 +248,26 @@ function cancelScheduledLeave() {
   }
 }
 
-function scheduleLeaveIfStillEmpty(guild) {
+function scheduleLeaveIfNoShotcaller(guild) {
   cancelScheduledLeave();
   leaveTimer = setTimeout(() => {
     leaveTimer = null;
     void (async () => {
       try {
-        // Fresh guild fetch so voiceStates are not stale after someone moved.
         const fresh = await guild.client.guilds.fetch(guild.id).catch(() => guild);
-        const approved = await countApprovedSpeakersInChannel(fresh, MIDLAND_EU_VOICE_CHANNEL_ID);
-        if (approved > 0) {
-          log(`Stay in booth — ${approved} Leader/Officer still present (leave cancelled)`);
-          const conn = getVoiceConnection(fresh.id);
-          if (!conn) await joinMidlandPower(fresh);
+        const sc = await findActiveShotcaller(fresh);
+        if (sc) {
+          log(`Stay — shotcaller still in #${sc.lang} (${sc.channelId})`);
+          if (!suppressAutoJoinAfterKick) {
+            const conn = getVoiceConnection(fresh.id);
+            if (!conn || conn.joinConfig?.channelId !== sc.channelId) {
+              await joinChannel(fresh, sc.channelId);
+            }
+          }
           return;
         }
-        await leaveMidlandPower(fresh.id);
+        suppressAutoJoinAfterKick = false; // session ended — allow join next time
+        await leaveVoice(fresh.id, 'no shotcaller in language booths');
       } catch (err) {
         warn('Debounced leave failed:', err.message || err);
       }
@@ -345,29 +297,16 @@ function pcmToWav(pcmBuffer, { channels = 2, sampleRate = 48000, bitDepth = 16 }
 
 async function collectPcmFromUser(receiver, userId) {
   const opusStream = receiver.subscribe(userId, {
-    end: {
-      behavior: EndBehaviorType.AfterSilence,
-      duration: SILENCE_END_MS,
-    },
+    end: { behavior: EndBehaviorType.AfterSilence, duration: SILENCE_END_MS },
   });
-
-  const decoder = new prism.opus.Decoder({
-    frameSize: 960,
-    channels: 2,
-    rate: 48000,
-  });
-
+  const decoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
   const chunks = [];
   decoder.on('data', (chunk) => chunks.push(chunk));
-
   try {
     await pipeline(opusStream, decoder);
   } catch (err) {
-    if (err?.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
-      throw err;
-    }
+    if (err?.code !== 'ERR_STREAM_PREMATURE_CLOSE') throw err;
   }
-
   return Buffer.concat(chunks);
 }
 
@@ -378,7 +317,6 @@ async function transcribeWav(wavBuffer) {
     punctuate: 'true',
     detect_language: 'true',
   });
-
   const alt = response?.results?.channels?.[0]?.alternatives?.[0];
   const transcript = String(alt?.transcript || '').trim();
   const detected =
@@ -388,7 +326,7 @@ async function transcribeWav(wavBuffer) {
     || '';
   return {
     transcript,
-    language: String(detected || '').toLowerCase(),
+    language: normalizeLang(detected),
     confidence: Number(alt?.confidence || 0),
   };
 }
@@ -397,43 +335,28 @@ async function translateText(text, sourceLangHint, targetCode) {
   const target = DEEPL_TARGET_BY_CODE[String(targetCode || '').toLowerCase()] || targetCode;
   if (!target) throw new Error(`Unsupported DeepL target: ${targetCode}`);
 
-  const hint = String(sourceLangHint || '').toLowerCase().trim();
+  const hint = normalizeLang(sourceLangHint);
   let sourceLang = null;
-  if (hint) {
-    if (ENGLISH_LANG_CODES.has(hint) || /^en([-_]|$)/i.test(hint)) {
-      sourceLang = 'en';
-    } else {
-      const base = hint.split(/[-_]/)[0];
-      sourceLang =
-        DEEPL_SOURCE_BY_HINT[hint]
-        || DEEPL_SOURCE_BY_HINT[base]
-        || null;
-    }
-  }
+  if (hint === 'en') sourceLang = 'en';
+  else if (hint && DEEPL_SOURCE_BY_HINT[hint]) sourceLang = DEEPL_SOURCE_BY_HINT[hint];
 
   try {
     const result = await deeplClient.translateText(text, sourceLang, target);
     return {
       text: String(result.text || '').trim(),
-      detectedSource: String(result.detectedSourceLang || sourceLang || '').toLowerCase(),
-      target: String(targetCode || '').toLowerCase(),
+      detectedSource: normalizeLang(result.detectedSourceLang || sourceLang || ''),
     };
   } catch (err) {
     if (sourceLang) {
-      warn(`DeepL ${sourceLang}→${target} failed (${err.message}); retrying auto-detect source`);
+      warn(`DeepL ${sourceLang}→${target} failed (${err.message}); auto-detect source`);
       const result = await deeplClient.translateText(text, null, target);
       return {
         text: String(result.text || '').trim(),
-        detectedSource: String(result.detectedSourceLang || '').toLowerCase(),
-        target: String(targetCode || '').toLowerCase(),
+        detectedSource: normalizeLang(result.detectedSourceLang || ''),
       };
     }
     throw err;
   }
-}
-
-async function translateToEnglish(text, sourceLangHint) {
-  return translateText(text, sourceLangHint, 'en-us');
 }
 
 function toNodeReadable(audio) {
@@ -462,13 +385,209 @@ async function playInConnection(connection, audioReadable) {
   const resource = createAudioResource(audioReadable);
   audioPlayer.play(resource);
   await entersState(audioPlayer, AudioPlayerStatus.Playing, 5_000).catch(() => null);
-  await entersState(audioPlayer, AudioPlayerStatus.Idle, 120_000).catch(() => null);
+  await entersState(audioPlayer, AudioPlayerStatus.Idle, 180_000).catch(() => null);
   playing = false;
 }
 
-function isEnglishLang(code) {
-  const c = String(code || '').toLowerCase();
-  return ENGLISH_LANG_CODES.has(c) || /^en([-_]|$)/i.test(c);
+async function postTextToChannel(guild, channelId, content) {
+  try {
+    const ch = await guild.channels.fetch(channelId).catch(() => null);
+    if (!ch || !ch.isTextBased?.()) {
+      warn(`Cannot post text to ${channelId}`);
+      return;
+    }
+    const body = content.length > 1900 ? `${content.slice(0, 1897)}...` : content;
+    await ch.send({ content: body, allowedMentions: { parse: [] } });
+  } catch (err) {
+    warn(`Text post to ${channelId} failed:`, err.message || err);
+  }
+}
+
+async function joinChannel(guild, channelId) {
+  if (!ensureClients()) return null;
+  if (joinPromise) return joinPromise;
+
+  joinPromise = (async () => {
+    try {
+      const existing = getVoiceConnection(guild.id);
+      if (existing) {
+        const status = existing.state.status;
+        if (
+          (status === VoiceConnectionStatus.Ready
+            || status === VoiceConnectionStatus.Connecting
+            || status === VoiceConnectionStatus.Signalling)
+          && existing.joinConfig?.channelId === String(channelId)
+        ) {
+          existing.subscribe(audioPlayer);
+          return existing;
+        }
+        try {
+          existing.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel || !channel.isVoiceBased?.()) {
+        warn(`Voice channel not found: ${channelId}`);
+        return null;
+      }
+
+      intentionalLeave = false;
+      const connection = joinVoiceChannel({
+        channelId: channel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: false,
+      });
+
+      connection.on('error', (err) => warn('Voice connection error:', err.message || err));
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        if (intentionalLeave || suppressAutoJoinAfterKick || delivering) return;
+        try {
+          const sc = await findActiveShotcaller(guild);
+          if (sc) {
+            warn('Voice disconnected unexpectedly — rejoining shotcaller booth');
+            cancelScheduledLeave();
+            setTimeout(() => {
+              if (!suppressAutoJoinAfterKick) void joinChannel(guild, sc.channelId).then((c) => {
+                if (c) attachReceiver(c, guild);
+              });
+            }, 750);
+          }
+        } catch (err) {
+          warn('Reconnect check failed:', err.message || err);
+        }
+      });
+
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      } catch (err) {
+        warn('Voice Ready failed:', err.message || err);
+        try {
+          connection.destroy();
+        } catch {
+          /* ignore */
+        }
+        return null;
+      }
+
+      connection.subscribe(audioPlayer);
+      log(`Joined voice ${LANG_BY_CHANNEL.get(String(channelId)) || '?'} (${channelId})`);
+      return connection;
+    } finally {
+      joinPromise = null;
+    }
+  })();
+
+  return joinPromise;
+}
+
+async function leaveVoice(guildId, reason) {
+  cancelScheduledLeave();
+  const connection = getVoiceConnection(guildId);
+  if (!connection) return;
+  intentionalLeave = true;
+  try {
+    connection.destroy();
+    log(`Left voice (${reason})`);
+  } catch (err) {
+    warn('Leave failed:', err.message || err);
+  }
+}
+
+function attachReceiver(connection, guild) {
+  if (!connection?.receiver) return;
+  const speaking = connection.receiver.speaking;
+  speaking.removeAllListeners('start');
+  speaking.on('start', (userId) => {
+    if (String(userId) === String(clientRef?.user?.id)) return;
+    if (delivering || playing) return;
+    void startListeningToUser(connection, guild, String(userId));
+  });
+}
+
+function startListeningToUser(connection, guild, userId) {
+  if (playing || delivering) return;
+  if (activeListeners.has(userId)) return;
+  activeListeners.add(userId);
+
+  (async () => {
+    try {
+      if (!(await memberHasShotcallerRole(guild, userId))) {
+        debug(`Ignore non-shotcaller ${userId}`);
+        return;
+      }
+      debug(`Listening to shotcaller ${userId}`);
+      const pcm = await collectPcmFromUser(connection.receiver, userId);
+      enqueueUtterance({ guild, userId, pcm });
+    } catch (err) {
+      warn(`Listen failed for ${userId}:`, err.message || err);
+    } finally {
+      activeListeners.delete(userId);
+    }
+  })();
+}
+
+/**
+ * Post translated text to every language booth chat, then TTS in each booth
+ * (skip source-language TTS — shotcaller already said it), return to shotcaller.
+ */
+async function relayShotcall(guild, userId, transcript, sourceLang) {
+  const src = normalizeLang(sourceLang) || 'en';
+  const payloads = [];
+
+  for (const lang of EVENT_LANGS) {
+    const channelId = CHANNEL_BY_LANG[lang];
+    if (!channelId) continue;
+    let text = transcript;
+    if (lang !== src) {
+      try {
+        const { text: translated } = await translateText(transcript, src, lang);
+        if (translated) text = translated;
+      } catch (err) {
+        warn(`Translate ${src}→${lang} failed:`, err.message || err);
+        continue;
+      }
+    }
+    payloads.push({ lang, channelId, text, speak: lang !== src });
+  }
+
+  // Text to all booths first (fast)
+  for (const p of payloads) {
+    const label = LANG_LABEL[p.lang] || p.lang;
+    const header = `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
+    await postTextToChannel(guild, p.channelId, `${header}\n${p.text}`);
+    log(`Chat ${src}→${p.lang}: ${p.text.slice(0, 100)}`);
+  }
+
+  const sc = await findActiveShotcaller(guild);
+  const homeId = sc?.channelId || getVoiceConnection(guild.id)?.joinConfig?.channelId || null;
+  homeChannelIdWhileDelivering = homeId;
+
+  delivering = true;
+  try {
+    for (const p of payloads) {
+      if (!p.speak || !p.text) continue;
+      try {
+        const conn = await joinChannel(guild, p.channelId);
+        if (!conn) continue;
+        const tts = await synthesizeSpeech(p.text);
+        await playInConnection(conn, tts);
+      } catch (err) {
+        warn(`TTS in ${p.lang} failed:`, err.message || err);
+      }
+    }
+  } finally {
+    delivering = false;
+    if (homeId && !suppressAutoJoinAfterKick) {
+      const conn = await joinChannel(guild, homeId);
+      if (conn) attachReceiver(conn, guild);
+    }
+    homeChannelIdWhileDelivering = null;
+  }
 }
 
 async function processUtterance({ guild, userId, pcm }) {
@@ -476,6 +595,7 @@ async function processUtterance({ guild, userId, pcm }) {
     debug(`Skip short utterance from ${userId} (${pcm?.length || 0} bytes)`);
     return;
   }
+  if (!(await memberHasShotcallerRole(guild, userId))) return;
 
   const wav = pcmToWav(pcm);
   const { transcript, language } = await transcribeWav(wav);
@@ -484,70 +604,8 @@ async function processUtterance({ guild, userId, pcm }) {
     return;
   }
 
-  log(`STT ${userId}: [${language || '?'}] ${transcript.slice(0, 160)}`);
-
-  const connection = getVoiceConnection(guild.id);
-  if (!connection) {
-    warn('No voice connection; skip playback');
-    return;
-  }
-
-  // English → RU / FR / ES / DE / PL (speak each translation)
-  if (isEnglishLang(language)) {
-    if (EN_TO_TARGET_LANGS.length === 0) {
-      debug('English speech but MIDLAND_VOICE_EN_TARGETS empty — skip');
-      return;
-    }
-    for (const target of EN_TO_TARGET_LANGS) {
-      try {
-        const { text: translated } = await translateText(transcript, 'en', target);
-        if (!translated || translated.toLowerCase() === transcript.toLowerCase()) {
-          debug(`Skip empty/identical EN→${target}`);
-          continue;
-        }
-        const label = TARGET_LABEL[target] || target.toUpperCase();
-        log(`EN→${target.toUpperCase()} (${label}) ${userId}: ${translated.slice(0, 120)}`);
-        const ttsStream = await synthesizeSpeech(translated);
-        await playInConnection(connection, ttsStream);
-      } catch (err) {
-        warn(`EN→${target} failed:`, err.message || err);
-      }
-    }
-    return;
-  }
-
-  // Non-English → English
-  const { text: english, detectedSource } = await translateToEnglish(transcript, language);
-  if (!english) {
-    debug('Empty translation');
-    return;
-  }
-
-  if (isEnglishLang(detectedSource)) {
-    // DeepL thinks source was English — treat as EN→targets path
-    if (EN_TO_TARGET_LANGS.length === 0) return;
-    for (const target of EN_TO_TARGET_LANGS) {
-      try {
-        const { text: translated } = await translateText(transcript, 'en', target);
-        if (!translated || translated.toLowerCase() === transcript.toLowerCase()) continue;
-        log(`EN→${target.toUpperCase()} ${userId}: ${translated.slice(0, 120)}`);
-        const ttsStream = await synthesizeSpeech(translated);
-        await playInConnection(connection, ttsStream);
-      } catch (err) {
-        warn(`EN→${target} failed:`, err.message || err);
-      }
-    }
-    return;
-  }
-
-  if (english.toLowerCase() === transcript.toLowerCase()) {
-    debug('Translation identical to source — skip TTS');
-    return;
-  }
-
-  log(`→EN ${userId}: ${english.slice(0, 160)}`);
-  const ttsStream = await synthesizeSpeech(english);
-  await playInConnection(connection, ttsStream);
+  log(`STT shotcaller ${userId}: [${language || '?'}] ${transcript.slice(0, 160)}`);
+  await relayShotcall(guild, userId, transcript, language);
 }
 
 function enqueueUtterance(job) {
@@ -572,167 +630,33 @@ async function drainQueue() {
   }
 }
 
-function startListeningToUser(connection, guild, userId) {
-  // Skip capturing while the bot is speaking to avoid feedback loops.
-  if (playing) {
-    debug(`Defer listen ${userId} — bot is speaking`);
-    return;
-  }
-  if (activeListeners.has(userId)) return;
-  activeListeners.add(userId);
-
-  (async () => {
-    try {
-      if (!(await memberHasTranslatorRole(guild, userId))) {
-        debug(`Ignore non-translator ${userId}`);
-        return;
-      }
-      debug(`Listening to ${userId}`);
-      const pcm = await collectPcmFromUser(connection.receiver, userId);
-      enqueueUtterance({ guild, userId, pcm });
-    } catch (err) {
-      warn(`Listen failed for ${userId}:`, err.message || err);
-    } finally {
-      activeListeners.delete(userId);
-    }
-  })();
-}
-
-function attachReceiver(connection, guild) {
-  const speaking = connection.receiver.speaking;
-  speaking.removeAllListeners('start');
-  speaking.on('start', (userId) => {
-    if (String(userId) === String(clientRef?.user?.id)) return;
-    void startListeningToUser(connection, guild, String(userId));
-  });
-}
-
-async function joinMidlandPower(guild) {
-  if (!ensureClients()) return null;
-
-  // One join at a time — parallel joinVoiceChannel creates competing sessions and Discord drops the bot.
-  if (joinPromise) return joinPromise;
-
-  joinPromise = (async () => {
-    try {
-      const existing = getVoiceConnection(guild.id);
-      if (existing) {
-        const status = existing.state.status;
-        if (
-          status === VoiceConnectionStatus.Ready
-          || status === VoiceConnectionStatus.Connecting
-          || status === VoiceConnectionStatus.Signalling
-        ) {
-          if (existing.joinConfig?.channelId === MIDLAND_EU_VOICE_CHANNEL_ID) {
-            attachReceiver(existing, guild);
-            existing.subscribe(audioPlayer);
-            return existing;
-          }
-        }
-        try {
-          existing.destroy();
-        } catch {
-          /* ignore */
-        }
-      }
-
-      const channel = await guild.channels.fetch(MIDLAND_EU_VOICE_CHANNEL_ID).catch(() => null);
-      if (!channel || !channel.isVoiceBased?.()) {
-        warn(`MIDLAND POWER channel not found: ${MIDLAND_EU_VOICE_CHANNEL_ID}`);
-        return null;
-      }
-
-      intentionalLeave = false;
-      const connection = joinVoiceChannel({
-        channelId: channel.id,
-        guildId: guild.id,
-        adapterCreator: guild.voiceAdapterCreator,
-        selfDeaf: false, // required to receive audio
-        selfMute: false,
-      });
-
-      connection.on('error', (err) => warn('Voice connection error:', err.message || err));
-      connection.on(VoiceConnectionStatus.Disconnected, async () => {
-        if (intentionalLeave) return;
-        try {
-          const approved = await countApprovedSpeakersInChannel(guild, MIDLAND_EU_VOICE_CHANNEL_ID);
-          if (approved > 0) {
-            warn('Voice disconnected unexpectedly — rejoining (Leaders/Officers still present)');
-            cancelScheduledLeave();
-            setTimeout(() => {
-              void joinMidlandPower(guild);
-            }, 750);
-          }
-        } catch (err) {
-          warn('Reconnect check failed:', err.message || err);
-        }
-      });
-
-      try {
-        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-      } catch (err) {
-        warn('Voice connection failed to become Ready:', err.message || err);
-        try {
-          connection.destroy();
-        } catch {
-          /* ignore */
-        }
-        return null;
-      }
-
-      attachReceiver(connection, guild);
-      connection.subscribe(audioPlayer);
-      log(`Joined MIDLAND POWER (${MIDLAND_EU_VOICE_CHANNEL_ID})`);
-      return connection;
-    } finally {
-      joinPromise = null;
-    }
-  })();
-
-  return joinPromise;
-}
-
-async function leaveMidlandPower(guildId) {
-  cancelScheduledLeave();
-  const connection = getVoiceConnection(guildId);
-  if (!connection) return;
-  intentionalLeave = true;
-  try {
-    connection.destroy();
-    log('Left MIDLAND POWER (no Leader/Officer remaining)');
-  } catch (err) {
-    warn('Leave failed:', err.message || err);
-  }
-}
-
-/**
- * Keep bot in MIDLAND POWER while ≥1 Guild Leader / Guild Officer is present.
- * Leave only when the count of those roles in the booth drops to 0 (debounced).
- */
 async function reconcileMidlandVoice(guild) {
   if (!ENABLED || !guild || String(guild.id) !== MIDLAND_EU_GUILD_ID) return;
 
-  const approved = await countApprovedSpeakersInChannel(guild, MIDLAND_EU_VOICE_CHANNEL_ID);
+  const sc = await findActiveShotcaller(guild);
   const connection = getVoiceConnection(guild.id);
-  const inTarget =
-    connection
-    && connection.joinConfig?.channelId === MIDLAND_EU_VOICE_CHANNEL_ID;
 
-  if (approved > 0) {
+  if (sc) {
     cancelScheduledLeave();
-    if (!inTarget) {
-      log(`Join booth — ${approved} Leader/Officer present`);
-      await joinMidlandPower(guild);
+    if (suppressAutoJoinAfterKick) {
+      debug('Shotcaller present but auto-join suppressed after kick');
+      return;
+    }
+    if (delivering) return;
+    const inRightChannel = connection && connection.joinConfig?.channelId === sc.channelId;
+    if (!inRightChannel) {
+      log(`Follow shotcaller ${sc.userId} → ${sc.lang} (${sc.channelId})`);
+      const conn = await joinChannel(guild, sc.channelId);
+      if (conn) attachReceiver(conn, guild);
     } else {
       attachReceiver(connection, guild);
     }
     return;
   }
 
-  // Zero Leader/Officer remaining — wait, then leave only if still empty.
-  if (connection || inTarget) {
-    log('No Leader/Officer left in booth — scheduling leave check');
-    scheduleLeaveIfStillEmpty(guild);
+  if (connection) {
+    log('No shotcaller in language booths — scheduling leave');
+    scheduleLeaveIfNoShotcaller(guild);
   }
 }
 
@@ -744,15 +668,23 @@ async function onVoiceStateUpdate(oldState, newState) {
   const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
   const changedUserId = String(newState.id || oldState.id || '');
 
-  // Bot's own join/move/disconnect must NOT drive leave/rejoin thrashing.
+  // Bot kicked / moved out of a language booth by someone else
   if (botId && changedUserId === botId) {
+    const leftLangBooth =
+      LANG_CHANNEL_IDS.has(String(oldState.channelId || ''))
+      && !LANG_CHANNEL_IDS.has(String(newState.channelId || ''));
+    if (leftLangBooth && !intentionalLeave && !delivering) {
+      suppressAutoJoinAfterKick = true;
+      warn('Bot removed from language booth — will not auto-rejoin until shotcaller leaves all booths');
+      cancelScheduledLeave();
+    }
     debug('Ignore bot own voiceStateUpdate');
     return;
   }
 
   const touched =
-    oldState.channelId === MIDLAND_EU_VOICE_CHANNEL_ID
-    || newState.channelId === MIDLAND_EU_VOICE_CHANNEL_ID;
+    LANG_CHANNEL_IDS.has(String(oldState.channelId || ''))
+    || LANG_CHANNEL_IDS.has(String(newState.channelId || ''));
   if (!touched) return;
 
   try {
@@ -766,17 +698,15 @@ async function init(client) {
   clientRef = client;
   if (!ENABLED) {
     console.log(
-      '[midland-voice] Disabled — set DEEPGRAM_API_KEY, DEEPL_AUTH_KEY, and ELEVENLABS_API_KEY on Render to enable Midland POWER auto-join + translation',
+      '[midland-voice] Disabled — set DEEPGRAM_API_KEY, DEEPL_AUTH_KEY, ELEVENLABS_API_KEY to enable shotcaller relay',
     );
     return;
   }
   ensureClients();
-  log(
-    `Enabled — guild ${MIDLAND_EU_GUILD_ID}; channel ${MIDLAND_EU_VOICE_CHANNEL_ID}; roles ${[...MIDLAND_TRANSLATOR_ROLE_IDS].join(',')}`,
-  );
-  log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → ElevenLabs(${ELEVENLABS_VOICE_ID})`);
-  log(`Speech languages: ${SUPPORTED_SPEECH_LANGUAGES.join(', ')} (+ auto-detect fallback)`);
-  log(`English → speak: ${EN_TO_TARGET_LANGS.join(', ') || '(none)'}`);
+  log(`Enabled — guild ${MIDLAND_EU_GUILD_ID}; shotcaller role ${SHOTCALLER_ROLE_ID}`);
+  log(`Language booths: ${EVENT_LANGS.map((l) => `${l}=${CHANNEL_BY_LANG[l]}`).join(', ')}`);
+  log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → chat+TTS ElevenLabs(${ELEVENLABS_VOICE_ID})`);
+  log('Kick = no auto-rejoin until shotcaller clears booths; unexpected disconnect = rejoin');
 
   try {
     const guild = await client.guilds.fetch(MIDLAND_EU_GUILD_ID);
@@ -790,6 +720,9 @@ module.exports = {
   init,
   onVoiceStateUpdate,
   isEnabled,
-  MIDLAND_EU_VOICE_CHANNEL_ID,
-  MIDLAND_TRANSLATOR_ROLE_IDS,
+  isProtectedVoiceChannel,
+  /** @deprecated use isProtectedVoiceChannel — kept so index.js temp-voice guard still works */
+  MIDLAND_EU_VOICE_CHANNEL_ID: CHANNEL_BY_LANG.en,
+  LANG_CHANNEL_IDS,
+  SHOTCALLER_ROLE_ID,
 };

@@ -3233,7 +3233,8 @@ function buildTempVoiceName(member) {
 function isTrackedTempVoiceChannel(channel) {
   if (!channel || channel.type !== ChannelType.GuildVoice) return false;
   if (channel.id === TEMP_VOICE_TRIGGER_CHANNEL_ID) return false;
-  // Midland POWER booth is permanent — never auto-delete (temp-voice must not touch it).
+  // Midland language booths are permanent — never auto-delete (temp-voice must not touch them).
+  if (midlandVoiceTranslate.isProtectedVoiceChannel?.(channel.id)) return false;
   if (String(channel.id) === String(midlandVoiceTranslate.MIDLAND_EU_VOICE_CHANNEL_ID || '')) return false;
   if (tempVoiceOwners.has(channel.id)) return true;
   return Boolean(resolveTempVoiceOwnerId(channel));
