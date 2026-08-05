@@ -420,21 +420,37 @@ function toNodeReadable(audio) {
   return Readable.from(audio);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 /** Buffer ElevenLabs MP3 fully — streaming wrappers often break discord.js ffmpeg demux. */
 async function synthesizeSpeechBuffer(text) {
-  const audio = await eleven.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
-    text,
-    model_id: ELEVENLABS_MODEL_ID,
-    output_format: 'mp3_44100_128',
-  });
-  const stream = toNodeReadable(audio);
-  const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const buf = Buffer.concat(chunks);
-  if (!buf.length) throw new Error('ElevenLabs returned empty audio');
-  return buf;
+  return withTimeout((async () => {
+    const audio = await eleven.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
+      text,
+      model_id: ELEVENLABS_MODEL_ID,
+      output_format: 'mp3_44100_128',
+    });
+    const stream = toNodeReadable(audio);
+    const chunks = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const buf = Buffer.concat(chunks);
+    if (!buf.length) throw new Error('ElevenLabs returned empty audio');
+    return buf;
+  })(), 25_000, 'ElevenLabs TTS');
 }
 
 async function playInConnection(connection, mp3Buffer) {
@@ -449,102 +465,171 @@ async function playInConnection(connection, mp3Buffer) {
     await entersState(audioPlayer, AudioPlayerStatus.Playing, 8_000).catch((err) => {
       warn('TTS did not reach Playing:', err?.message || err);
     });
-    await entersState(audioPlayer, AudioPlayerStatus.Idle, 180_000).catch(() => null);
+    // Cap playback wait so a stuck ffmpeg demux cannot freeze the whole tour
+    await Promise.race([
+      entersState(audioPlayer, AudioPlayerStatus.Idle, 60_000).catch(() => null),
+      sleep(60_000),
+    ]);
   } finally {
-    playing = false;
+    stopAudioPlayer();
   }
 }
 
-async function postTextToChannel(guild, channelId, content) {
-  try {
-    const ch = await guild.channels.fetch(channelId).catch(() => null);
-    if (!ch || !ch.isTextBased?.()) {
-      warn(`Cannot post text to ${channelId}`);
-      return;
+/** Confirm the bot's Discord voice state is in the target channel (joinConfig alone is not enough). */
+async function waitUntilBotInChannel(guild, channelId, timeoutMs = 12_000) {
+  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
+  if (!botId) return false;
+  const want = String(channelId);
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const meCh = guild.members.me?.voice?.channelId;
+    if (meCh && String(meCh) === want) return true;
+
+    const cached = guild.voiceStates.cache.get(botId);
+    if (cached && String(cached.channelId || '') === want) return true;
+
+    await sleep(200);
+  }
+  return false;
+}
+
+function wireConnectionHandlers(connection, guild) {
+  connection.removeAllListeners('error');
+  connection.removeAllListeners(VoiceConnectionStatus.Disconnected);
+  connection.on('error', (err) => warn('Voice connection error:', err.message || err));
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    if (intentionalLeave || suppressAutoJoinAfterKick || delivering) return;
+    try {
+      const sc = await findActiveShotcaller(guild);
+      if (sc) {
+        warn('Voice disconnected unexpectedly — rejoining shotcaller booth');
+        cancelScheduledLeave();
+        setTimeout(() => {
+          if (!suppressAutoJoinAfterKick && !delivering) {
+            void joinChannel(guild, sc.channelId).then((c) => {
+              if (c) attachReceiver(c, guild);
+            });
+          }
+        }, 750);
+      }
+    } catch (err) {
+      warn('Reconnect check failed:', err.message || err);
     }
-    const body = content.length > 1900 ? `${content.slice(0, 1897)}...` : content;
-    await ch.send({ content: body, allowedMentions: { parse: [] } });
-  } catch (err) {
-    warn(`Text post to ${channelId} failed:`, err.message || err);
-  }
+  });
 }
 
+function stopAudioPlayer() {
+  if (!audioPlayer) return;
+  try {
+    audioPlayer.stop(true);
+  } catch {
+    /* ignore */
+  }
+  playing = false;
+}
+
+/**
+ * Join or move the bot into a voice channel.
+ * @discordjs/voice does not wait for channel moves when already Ready — we must
+ * rejoin() and confirm via voice state, with destroy+recreate as fallback.
+ */
 async function joinChannel(guild, channelId) {
   if (!ensureClients()) return null;
 
-  // Serialize joins; wait out an in-flight join for a different channel, then proceed
   while (joinPromise) {
     await joinPromise.catch(() => null);
   }
 
   const wantId = String(channelId);
-  const already = getVoiceConnection(guild.id);
-  if (
-    already
-    && already.joinConfig?.channelId === wantId
-    && (already.state.status === VoiceConnectionStatus.Ready
-      || already.state.status === VoiceConnectionStatus.Connecting
-      || already.state.status === VoiceConnectionStatus.Signalling)
-  ) {
-    already.subscribe(audioPlayer);
-    if (already.state.status === VoiceConnectionStatus.Ready) return already;
-    try {
-      await entersState(already, VoiceConnectionStatus.Ready, 20_000);
-      return already;
-    } catch (err) {
-      warn('Existing voice Ready failed:', err.message || err);
-    }
-  }
 
   joinPromise = (async () => {
+    intentionalLeave = true;
     try {
+      stopAudioPlayer();
+
+      let connection = getVoiceConnection(guild.id);
+
+      // Already in the right channel
+      if (
+        connection
+        && connection.state.status !== VoiceConnectionStatus.Destroyed
+        && String(connection.joinConfig?.channelId) === wantId
+      ) {
+        if (connection.state.status === VoiceConnectionStatus.Ready) {
+          const ok = await waitUntilBotInChannel(guild, wantId, 3_000);
+          if (ok || connection.state.status === VoiceConnectionStatus.Ready) {
+            connection.subscribe(audioPlayer);
+            intentionalLeave = false;
+            return connection;
+          }
+        } else {
+          try {
+            await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+            connection.subscribe(audioPlayer);
+            intentionalLeave = false;
+            return connection;
+          } catch (err) {
+            warn('Wait Ready (same channel) failed:', err.message || err);
+          }
+        }
+      }
+
+      // Move existing Ready/Signalling connection via rejoin (updates joinConfig)
+      if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
+        const moved = connection.rejoin({
+          channelId: wantId,
+          selfDeaf: false,
+          selfMute: false,
+        });
+        if (moved) {
+          wireConnectionHandlers(connection, guild);
+          // Stay Ready during move — must wait for Discord voice state, not entersState(Ready)
+          const confirmed = await waitUntilBotInChannel(guild, wantId, 12_000);
+          if (confirmed) {
+            try {
+              if (connection.state.status !== VoiceConnectionStatus.Ready) {
+                await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+              }
+            } catch {
+              /* still try to use connection if VSU confirmed */
+            }
+            connection.subscribe(audioPlayer);
+            intentionalLeave = false;
+            log(`Moved voice → ${LANG_BY_CHANNEL.get(wantId) || '?'} (${wantId})`);
+            return connection;
+          }
+          warn(`Voice move to ${wantId} not confirmed — recreating connection`);
+        }
+
+        try {
+          connection.destroy();
+        } catch {
+          /* ignore */
+        }
+        connection = null;
+        await sleep(400);
+      }
+
       const channel = await guild.channels.fetch(wantId).catch(() => null);
       if (!channel || !channel.isVoiceBased?.()) {
         warn(`Voice channel not found: ${wantId}`);
         return null;
       }
 
-      // Treat hops as intentional until Ready — avoids false "kick" suppress
-      intentionalLeave = true;
-
-      // Prefer move (re-join) over destroy+recreate — fewer disconnect races
-      const connection = joinVoiceChannel({
+      connection = joinVoiceChannel({
         channelId: channel.id,
         guildId: guild.id,
         adapterCreator: guild.voiceAdapterCreator,
         selfDeaf: false,
         selfMute: false,
       });
-
-      // Avoid stacking handlers on repeated moves of the same connection
-      connection.removeAllListeners('error');
-      connection.removeAllListeners(VoiceConnectionStatus.Disconnected);
-      connection.on('error', (err) => warn('Voice connection error:', err.message || err));
-      connection.on(VoiceConnectionStatus.Disconnected, async () => {
-        if (intentionalLeave || suppressAutoJoinAfterKick || delivering) return;
-        try {
-          const sc = await findActiveShotcaller(guild);
-          if (sc) {
-            warn('Voice disconnected unexpectedly — rejoining shotcaller booth');
-            cancelScheduledLeave();
-            setTimeout(() => {
-              if (!suppressAutoJoinAfterKick && !delivering) {
-                void joinChannel(guild, sc.channelId).then((c) => {
-                  if (c) attachReceiver(c, guild);
-                });
-              }
-            }, 750);
-          }
-        } catch (err) {
-          warn('Reconnect check failed:', err.message || err);
-        }
-      });
+      wireConnectionHandlers(connection, guild);
 
       try {
         await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
       } catch (err) {
         warn('Voice Ready failed:', err.message || err);
-        intentionalLeave = false;
         try {
           connection.destroy();
         } catch {
@@ -553,11 +638,21 @@ async function joinChannel(guild, channelId) {
         return null;
       }
 
-      intentionalLeave = false;
+      const confirmed = await waitUntilBotInChannel(guild, wantId, 10_000);
+      if (!confirmed) {
+        warn(`Joined ${wantId} but voice state not confirmed yet — continuing`);
+      }
+
       connection.subscribe(audioPlayer);
+      intentionalLeave = false;
       log(`Joined voice ${LANG_BY_CHANNEL.get(wantId) || '?'} (${wantId})`);
       return connection;
+    } catch (err) {
+      warn(`joinChannel(${wantId}) failed:`, err.message || err);
+      return null;
     } finally {
+      // If we failed before clearing, still release the intentional flag
+      if (intentionalLeave) intentionalLeave = false;
       joinPromise = null;
     }
   })();
