@@ -1,12 +1,13 @@
 /**
  * Midland EU — multi-language voice booths + shotcaller relay.
  *
- * Shotcaller (role) speaks in any language booth → STT → translate to every
- * other booth language → post text in each voice-channel chat + TTS spoken
- * by the bot (visits each channel; Discord allows one VC per guild).
+ * Shotcaller speaks in a language booth → STT → translate → text + TTS only in
+ * OTHER language booths that have ≥1 verified participant (never the shotcaller's
+ * booth, never same-language echo like English→English). Discord allows one VC
+ * per guild, so TTS tours target channels then returns to the shotcaller.
  *
  * Languages / channels: EN, RU, DE, PL, FR, ES, PT, ZH, IT (both directions).
- * Only the shotcaller role is listened to (Leaders/Officers removed).
+ * Only the shotcaller role is listened to.
  *
  * Kick: do not auto-rejoin. Unexpected voice disconnect: rejoin if shotcaller
  * still in a booth and we were not kicked / intentionally left.
@@ -20,9 +21,11 @@ const {
   createAudioResource,
   AudioPlayerStatus,
   VoiceConnectionStatus,
+  StreamType,
   entersState,
   EndBehaviorType,
   getVoiceConnection,
+  generateDependencyReport,
 } = require('@discordjs/voice');
 const prism = require('prism-media');
 const { DeepgramClient } = require('@deepgram/sdk');
@@ -41,6 +44,12 @@ try {
 const MIDLAND_EU_GUILD_ID = String(process.env.MIDLAND_EU_GUILD_ID || '1045040260268163194').trim();
 const SHOTCALLER_ROLE_ID = String(
   process.env.MIDLAND_SHOTCALLER_ROLE_ID || '1534633764570009703',
+).trim();
+/** Verified role — TTS (and text) only go to booths with ≥1 non-bot member holding this role. */
+const VERIFIED_ROLE_ID = String(
+  process.env.MIDLAND_VERIFYED_ROLE_ID
+  || process.env.MIDLAND_VERIFIED_ROLE_ID
+  || '1079821419606712330',
 ).trim();
 
 /** lang code → Discord voice channel ID */
@@ -204,15 +213,43 @@ function ensureClients() {
   return true;
 }
 
-async function memberHasShotcallerRole(guild, userId) {
+async function fetchMember(guild, userId) {
   try {
-    const member = await guild.members.fetch(userId);
-    if (!member || member.user?.bot) return false;
-    return member.roles.cache.has(SHOTCALLER_ROLE_ID);
+    return await guild.members.fetch(userId);
   } catch (err) {
-    debug(`Shotcaller role fetch failed for ${userId}:`, err.message);
-    return false;
+    debug(`Member fetch failed for ${userId}:`, err.message);
+    return null;
   }
+}
+
+async function memberHasShotcallerRole(guild, userId) {
+  const member = await fetchMember(guild, userId);
+  if (!member || member.user?.bot) return false;
+  return member.roles.cache.has(SHOTCALLER_ROLE_ID);
+}
+
+async function memberHasVerifiedRole(guild, userId) {
+  if (!VERIFIED_ROLE_ID) return true;
+  const member = await fetchMember(guild, userId);
+  if (!member || member.user?.bot) return false;
+  return member.roles.cache.has(VERIFIED_ROLE_ID);
+}
+
+/**
+ * True if the booth has at least one non-bot participant with the verified role.
+ * Member cache is tiny on Render — always fetch roles when needed.
+ */
+async function channelHasVerifiedParticipant(guild, channelId) {
+  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
+  const target = String(channelId);
+  for (const vs of guild.voiceStates.cache.values()) {
+    if (String(vs.channelId || '') !== target) continue;
+    const uid = String(vs.id);
+    if (botId && uid === botId) continue;
+    if (vs.member?.user?.bot) continue;
+    if (await memberHasVerifiedRole(guild, uid)) return true;
+  }
+  return false;
 }
 
 /**
@@ -310,7 +347,7 @@ async function collectPcmFromUser(receiver, userId) {
   return Buffer.concat(chunks);
 }
 
-async function transcribeWav(wavBuffer) {
+async function transcribeWav(wavBuffer, boothLangHint = '') {
   const response = await deepgram.listen.v1.media.transcribeFile(wavBuffer, {
     model: DEEPGRAM_MODEL,
     smart_format: 'true',
@@ -324,9 +361,11 @@ async function transcribeWav(wavBuffer) {
     || alt?.languages?.[0]
     || response?.metadata?.detected_language
     || '';
+  const hint = normalizeLang(boothLangHint);
+  const language = normalizeLang(detected) || hint || '';
   return {
     transcript,
-    language: normalizeLang(detected),
+    language,
     confidence: Number(alt?.confidence || 0),
   };
 }
@@ -363,30 +402,49 @@ function toNodeReadable(audio) {
   if (!audio) throw new Error('Empty TTS audio');
   if (Buffer.isBuffer(audio)) return Readable.from(audio);
   if (typeof audio.pipe === 'function') return audio;
-  if (typeof Readable.fromWeb === 'function' && audio.getReader) {
-    return Readable.fromWeb(audio);
+  if (typeof Readable.fromWeb === 'function') {
+    if (typeof audio.getReader === 'function') return Readable.fromWeb(audio);
+    // ElevenLabs UniversalStreamWrapper often exposes .readableStream
+    if (audio.readableStream && typeof audio.readableStream.getReader === 'function') {
+      return Readable.fromWeb(audio.readableStream);
+    }
   }
   return Readable.from(audio);
 }
 
-async function synthesizeSpeech(text) {
+/** Buffer ElevenLabs MP3 fully — streaming wrappers often break discord.js ffmpeg demux. */
+async function synthesizeSpeechBuffer(text) {
   const audio = await eleven.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
     text,
     model_id: ELEVENLABS_MODEL_ID,
     output_format: 'mp3_44100_128',
   });
-  return toNodeReadable(audio);
+  const stream = toNodeReadable(audio);
+  const chunks = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const buf = Buffer.concat(chunks);
+  if (!buf.length) throw new Error('ElevenLabs returned empty audio');
+  return buf;
 }
 
-async function playInConnection(connection, audioReadable) {
+async function playInConnection(connection, mp3Buffer) {
   if (!connection || !audioPlayer) return;
   connection.subscribe(audioPlayer);
   playing = true;
-  const resource = createAudioResource(audioReadable);
-  audioPlayer.play(resource);
-  await entersState(audioPlayer, AudioPlayerStatus.Playing, 5_000).catch(() => null);
-  await entersState(audioPlayer, AudioPlayerStatus.Idle, 180_000).catch(() => null);
-  playing = false;
+  try {
+    const resource = createAudioResource(Readable.from(mp3Buffer), {
+      inputType: StreamType.Arbitrary,
+    });
+    audioPlayer.play(resource);
+    await entersState(audioPlayer, AudioPlayerStatus.Playing, 8_000).catch((err) => {
+      warn('TTS did not reach Playing:', err?.message || err);
+    });
+    await entersState(audioPlayer, AudioPlayerStatus.Idle, 180_000).catch(() => null);
+  } finally {
+    playing = false;
+  }
 }
 
 async function postTextToChannel(guild, channelId, content) {
@@ -421,6 +479,8 @@ async function joinChannel(guild, channelId) {
           existing.subscribe(audioPlayer);
           return existing;
         }
+        // Mark intentional so channel hops during TTS are not treated as kicks
+        intentionalLeave = true;
         try {
           existing.destroy();
         } catch {
@@ -532,50 +592,96 @@ function startListeningToUser(connection, guild, userId) {
 }
 
 /**
- * Post translated text to every language booth chat, then TTS in each booth
- * (skip source-language TTS — shotcaller already said it), return to shotcaller.
+ * Translate + post text + TTS only to OTHER language booths.
+ * Never echo into the shotcaller's current booth, and never send same-language
+ * (e.g. English→English) text/TTS — only real translations for other booths
+ * that have ≥1 verified participant. Then return to the shotcaller.
  */
 async function relayShotcall(guild, userId, transcript, sourceLang) {
   const src = normalizeLang(sourceLang) || 'en';
-  const payloads = [];
+  const sc = await findActiveShotcaller(guild);
+  const homeId = sc?.channelId || getVoiceConnection(guild.id)?.joinConfig?.channelId || null;
+  const homeLang = homeId ? (LANG_BY_CHANNEL.get(String(homeId)) || '') : '';
+  homeChannelIdWhileDelivering = homeId;
 
+  const payloads = [];
   for (const lang of EVENT_LANGS) {
     const channelId = CHANNEL_BY_LANG[lang];
     if (!channelId) continue;
-    let text = transcript;
-    if (lang !== src) {
-      try {
-        const { text: translated } = await translateText(transcript, src, lang);
-        if (translated) text = translated;
-      } catch (err) {
-        warn(`Translate ${src}→${lang} failed:`, err.message || err);
-        continue;
-      }
+
+    // Never relay into the booth the shotcaller is sitting in
+    if (homeId && String(channelId) === String(homeId)) {
+      debug(`Skip ${lang} — shotcaller is in this booth`);
+      continue;
     }
-    payloads.push({ lang, channelId, text, speak: lang !== src });
+    // Never same-language echo (EN→EN, RU→RU, …)
+    if (lang === src) {
+      debug(`Skip ${lang} — source language (no translate needed)`);
+      continue;
+    }
+    // Belt-and-suspenders: also skip home booth language code
+    if (homeLang && lang === homeLang) {
+      debug(`Skip ${lang} — shotcaller booth language`);
+      continue;
+    }
+
+    let text = '';
+    try {
+      const { text: translated } = await translateText(transcript, src, lang);
+      text = String(translated || '').trim();
+    } catch (err) {
+      warn(`Translate ${src}→${lang} failed:`, err.message || err);
+      continue;
+    }
+    if (!text) continue;
+
+    const hasAudience = await channelHasVerifiedParticipant(guild, channelId);
+    if (!hasAudience) {
+      debug(`Skip ${lang} — no verified participants`);
+      continue;
+    }
+
+    payloads.push({ lang, channelId, text });
   }
 
-  // Text to all booths first (fast)
+  if (!payloads.length) {
+    log(`No relay targets for ${src} (other booths need verified listeners)`);
+    homeChannelIdWhileDelivering = null;
+    return;
+  }
+
   for (const p of payloads) {
     const label = LANG_LABEL[p.lang] || p.lang;
     const header = `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
     await postTextToChannel(guild, p.channelId, `${header}\n${p.text}`);
-    log(`Chat ${src}→${p.lang}: ${p.text.slice(0, 100)}`);
+    log(`Chat ${src}→${p.lang} @ ${p.channelId}: ${p.text.slice(0, 100)}`);
   }
 
-  const sc = await findActiveShotcaller(guild);
-  const homeId = sc?.channelId || getVoiceConnection(guild.id)?.joinConfig?.channelId || null;
-  homeChannelIdWhileDelivering = homeId;
+  // Pre-synthesize while still in the shotcaller booth
+  for (const p of payloads) {
+    try {
+      p.mp3 = await synthesizeSpeechBuffer(p.text);
+      log(`TTS ready ${p.lang}: ${p.mp3.length} bytes`);
+    } catch (err) {
+      warn(`TTS synth ${p.lang} failed:`, err.message || err);
+      p.mp3 = null;
+    }
+  }
 
   delivering = true;
   try {
     for (const p of payloads) {
-      if (!p.speak || !p.text) continue;
+      if (!p.mp3) continue;
       try {
+        log(`TTS join ${p.lang} (${p.channelId})`);
         const conn = await joinChannel(guild, p.channelId);
-        if (!conn) continue;
-        const tts = await synthesizeSpeech(p.text);
-        await playInConnection(conn, tts);
+        if (!conn) {
+          warn(`TTS join failed for ${p.lang}`);
+          continue;
+        }
+        attachReceiver(conn, guild);
+        await playInConnection(conn, p.mp3);
+        log(`TTS played in ${p.lang}`);
       } catch (err) {
         warn(`TTS in ${p.lang} failed:`, err.message || err);
       }
@@ -583,6 +689,7 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
   } finally {
     delivering = false;
     if (homeId && !suppressAutoJoinAfterKick) {
+      log(`TTS tour done — returning to shotcaller booth ${homeId}`);
       const conn = await joinChannel(guild, homeId);
       if (conn) attachReceiver(conn, guild);
     }
@@ -597,15 +704,20 @@ async function processUtterance({ guild, userId, pcm }) {
   }
   if (!(await memberHasShotcallerRole(guild, userId))) return;
 
+  const sc = await findActiveShotcaller(guild);
+  const boothLang = sc?.userId === String(userId) ? (sc.lang || '') : '';
+
   const wav = pcmToWav(pcm);
-  const { transcript, language } = await transcribeWav(wav);
+  const { transcript, language } = await transcribeWav(wav, boothLang);
   if (!transcript) {
     debug(`Empty transcript for ${userId}`);
     return;
   }
 
-  log(`STT shotcaller ${userId}: [${language || '?'}] ${transcript.slice(0, 160)}`);
-  await relayShotcall(guild, userId, transcript, language);
+  // Prefer Deepgram language; fall back to booth language when detection is empty
+  const src = normalizeLang(language) || normalizeLang(boothLang) || 'en';
+  log(`STT shotcaller ${userId}: [${src}${boothLang && boothLang !== src ? ` booth=${boothLang}` : ''}] ${transcript.slice(0, 160)}`);
+  await relayShotcall(guild, userId, transcript, src);
 }
 
 function enqueueUtterance(job) {
@@ -704,9 +816,18 @@ async function init(client) {
   }
   ensureClients();
   log(`Enabled — guild ${MIDLAND_EU_GUILD_ID}; shotcaller role ${SHOTCALLER_ROLE_ID}`);
+  log(`Verified audience role ${VERIFIED_ROLE_ID} (MIDLAND_VERIFYED_ROLE_ID) — text+TTS only to occupied booths`);
   log(`Language booths: ${EVENT_LANGS.map((l) => `${l}=${CHANNEL_BY_LANG[l]}`).join(', ')}`);
   log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → chat+TTS ElevenLabs(${ELEVENLABS_VOICE_ID})`);
   log('Kick = no auto-rejoin until shotcaller clears booths; unexpected disconnect = rejoin');
+  try {
+    const report = generateDependencyReport();
+    if (report.includes('ffmpeg') || report.includes('FFmpeg')) {
+      log(`Voice deps:\n${report}`);
+    }
+  } catch (err) {
+    warn('Could not print voice dependency report:', err.message || err);
+  }
 
   try {
     const guild = await client.guilds.fetch(MIDLAND_EU_GUILD_ID);
