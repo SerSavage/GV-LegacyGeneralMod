@@ -1,16 +1,15 @@
 /**
  * Midland EU — multi-language voice booths + shotcaller relay.
  *
- * Shotcaller speaks in a language booth → STT → translate → text + TTS only in
- * OTHER language booths that have ≥1 verified participant (never the shotcaller's
- * booth, never same-language echo like English→English). Discord allows one VC
- * per guild, so TTS tours target channels then returns to the shotcaller.
+ * Shotcaller speaks in a language booth → STT → translate → text + TTS in other
+ * language booths with ≥1 verified participant. When speech is English, also
+ * deliver the English original to the English booth (even if the shotcaller is
+ * sitting in a non-English booth) so EN can follow. Never TTS an echo of the
+ * same language into the shotcaller's current booth. Discord = one VC per guild,
+ * so TTS tours channels then returns to the shotcaller.
  *
  * Languages / channels: EN, RU, DE, PL, FR, ES, PT, ZH, IT (both directions).
  * Only the shotcaller role is listened to.
- *
- * Kick: do not auto-rejoin. Unexpected voice disconnect: rejoin if shotcaller
- * still in a booth and we were not kicked / intentionally left.
  */
 const fs = require('fs');
 const { Readable } = require('stream');
@@ -169,14 +168,15 @@ let hopGuardUntil = 0;
 let suppressAutoJoinUntil = 0;
 const KICK_REJOIN_COOLDOWN_MS = Math.max(
   0,
-  parseInt(process.env.MIDLAND_VOICE_KICK_COOLDOWN_MS || '8000', 10) || 8000,
+  parseInt(process.env.MIDLAND_VOICE_KICK_COOLDOWN_MS || '2000', 10) || 2000,
 );
 const RECONCILE_INTERVAL_MS = Math.max(
-  5000,
-  parseInt(process.env.MIDLAND_VOICE_RECONCILE_MS || '10000', 10) || 10000,
+  3000,
+  parseInt(process.env.MIDLAND_VOICE_RECONCILE_MS || '5000', 10) || 5000,
 );
 let homeChannelIdWhileDelivering = null;
 let reconcileTimer = null;
+let kickFollowTimer = null;
 
 function beginVoiceHop() {
   intentionalLeave = true;
@@ -197,16 +197,42 @@ function isKickCooldownActive() {
   return Date.now() < suppressAutoJoinUntil;
 }
 
+function clearKickCooldown() {
+  suppressAutoJoinUntil = 0;
+  if (kickFollowTimer) {
+    clearTimeout(kickFollowTimer);
+    kickFollowTimer = null;
+  }
+}
+
 function armKickCooldown(reason) {
   suppressAutoJoinUntil = Date.now() + KICK_REJOIN_COOLDOWN_MS;
   warn(
-    `${reason} — auto-rejoin cooldown ${Math.round(KICK_REJOIN_COOLDOWN_MS / 1000)}s `
-    + `(then follow shotcaller again)`,
+    `${reason} — auto-rejoin in ${Math.round(KICK_REJOIN_COOLDOWN_MS / 1000)}s`,
   );
+  if (kickFollowTimer) clearTimeout(kickFollowTimer);
+  kickFollowTimer = setTimeout(() => {
+    kickFollowTimer = null;
+    clearKickCooldown();
+    if (!clientRef || delivering) return;
+    void clientRef.guilds.fetch(MIDLAND_EU_GUILD_ID)
+      .then((g) => {
+        log('Kick cooldown ended — forcing follow reconcile');
+        return reconcileMidlandVoice(g);
+      })
+      .catch((err) => warn('Post-kick follow failed:', err.message || err));
+  }, KICK_REJOIN_COOLDOWN_MS + 100);
 }
 
-function clearKickCooldown() {
-  suppressAutoJoinUntil = 0;
+async function forceFollowShotcaller(guild, reason) {
+  const sc = await findActiveShotcaller(guild);
+  if (!sc) return null;
+  clearKickCooldown();
+  log(`${reason}: follow shotcaller ${sc.userId} → ${sc.lang} (${sc.channelId})`);
+  const conn = await joinChannel(guild, sc.channelId);
+  if (conn) attachReceiver(conn, guild);
+  else warn(`${reason}: join failed for ${sc.lang}`);
+  return conn;
 }
 
 function log(...args) {
@@ -826,13 +852,13 @@ function startListeningToUser(connection, guild, userId) {
 }
 
 /**
- * Translate + post text + TTS only to OTHER language booths.
- * Never echo into the shotcaller's current booth, and never send same-language
- * (e.g. English→English) text/TTS — only real translations for other booths
- * that have ≥1 verified participant. Then return to the shotcaller.
+ * Relay shotcall text + TTS.
  *
- * Translate / chat / TTS synth run in parallel for speed; Discord VC TTS tour
- * must stay sequential (one channel per guild).
+ * - Every non-source language booth: translated text + TTS (if verified listeners).
+ * - When source is English: also send English text + TTS to the English booth
+ *   (so EN knows what was said even if the shotcaller is in FR/RU/…).
+ * - Never TTS same-language echo in the shotcaller's current booth (they already spoke).
+ * - May still post text into the home booth when useful (e.g. EN awareness).
  */
 async function relayShotcall(guild, userId, transcript, sourceLang) {
   const t0 = Date.now();
@@ -846,78 +872,114 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
   for (const lang of EVENT_LANGS) {
     const channelId = CHANNEL_BY_LANG[lang];
     if (!channelId) continue;
-    if (homeId && String(channelId) === String(homeId)) {
-      debug(`Skip ${lang} — shotcaller is in this booth`);
+
+    const isHome =
+      (homeId && String(channelId) === String(homeId))
+      || (homeLang && lang === homeLang);
+    const sameLang = lang === src;
+    // English spoken → always consider EN booth (awareness), even from a non-EN booth.
+    // Other languages → only when translating into that booth.
+    const wantEnglishAwareness = src === 'en' && lang === 'en';
+    const wantTranslation = !sameLang;
+    if (!wantEnglishAwareness && !wantTranslation) {
+      debug(`Skip ${lang} — same language and not English awareness`);
       continue;
     }
-    if (lang === src) {
-      debug(`Skip ${lang} — source language (no translate needed)`);
-      continue;
-    }
-    if (homeLang && lang === homeLang) {
-      debug(`Skip ${lang} — shotcaller booth language`);
-      continue;
-    }
-    candidates.push({ lang, channelId });
+
+    candidates.push({
+      lang,
+      channelId,
+      isHome,
+      sameLang,
+      wantEnglishAwareness,
+    });
   }
 
   if (!candidates.length) {
-    log(`No relay candidates for ${src}`);
+    log(`No relay candidates for src=${src} home=${homeLang || '?'}`);
     homeChannelIdWhileDelivering = null;
     return;
   }
 
-  // One audience scan, then filter candidates
   const occupied = await getVerifiedOccupiedChannelIds(guild);
-  const withAudience = candidates.filter((c) => {
-    const ok = occupied.has(String(c.channelId));
-    if (!ok) debug(`Skip ${c.lang} — no verified participants`);
-    return ok;
+  log(
+    `Relay plan src=${src} home=${homeLang || '?'} candidates=${candidates.map((c) => c.lang).join(',')} `
+    + `verifiedBooths=${[...occupied].map((id) => LANG_BY_CHANNEL.get(String(id)) || id).join(',') || 'none'}`,
+  );
+
+  const targets = candidates.filter((c) => {
+    const hasAudience = occupied.has(String(c.channelId));
+    // Always allow English awareness text even if EN booth is empty (chat log);
+    // TTS still requires audience below.
+    if (!hasAudience && !c.wantEnglishAwareness) {
+      debug(`Skip ${c.lang} — no verified participants`);
+      return false;
+    }
+    c.hasAudience = hasAudience;
+    return true;
   });
 
-  if (!withAudience.length) {
-    log(`No relay targets for ${src} (other booths need verified listeners)`);
+  if (!targets.length) {
+    log(`No relay targets for ${src} (need verified listeners in target booths)`);
     homeChannelIdWhileDelivering = null;
     return;
   }
 
-  // Translations in parallel
-  const translated = await Promise.all(
-    withAudience.map(async (c) => {
-      try {
-        const { text } = await translateText(transcript, src, c.lang);
-        const trimmed = String(text || '').trim();
-        if (!trimmed) return null;
-        return { ...c, text: trimmed };
-      } catch (err) {
-        warn(`Translate ${src}→${c.lang} failed:`, err.message || err);
-        return null;
+  const prepared = await Promise.all(
+    targets.map(async (c) => {
+      let text = '';
+      if (c.sameLang) {
+        text = String(transcript || '').trim();
+      } else {
+        try {
+          const { text: translated } = await translateText(transcript, src, c.lang);
+          text = String(translated || '').trim();
+        } catch (err) {
+          warn(`Translate ${src}→${c.lang} failed:`, err.message || err);
+          return null;
+        }
       }
+      if (!text) return null;
+
+      // TTS: not a same-language echo in the shotcaller's booth; needs listeners
+      // (English awareness TTS only if EN booth has verified members).
+      const speak = Boolean(c.hasAudience) && !(c.isHome && c.sameLang);
+      const postText = Boolean(c.hasAudience) || c.wantEnglishAwareness;
+      return { ...c, text, speak, postText };
     }),
   );
-  const payloads = translated.filter(Boolean);
+  const payloads = prepared.filter(Boolean);
 
   if (!payloads.length) {
-    log(`No translations produced for ${src}`);
+    log(`No payloads produced for ${src}`);
     homeChannelIdWhileDelivering = null;
     return;
   }
 
-  log(`Relay ${src} → ${payloads.map((p) => p.lang).join(',')} (${Date.now() - t0}ms to translate)`);
+  log(
+    `Relay ${src} → ${payloads.map((p) => `${p.lang}${p.speak ? '' : '(text)'}`).join(',')} `
+    + `(${Date.now() - t0}ms to translate)`,
+  );
 
-  // Chat posts + TTS synth in parallel (text reaches booths ASAP).
-  // Keep them independent so a TTS failure never blocks chat delivery.
+  // Chat posts + TTS synth in parallel
   await Promise.all([
     Promise.all(
       payloads.map(async (p) => {
+        if (!p.postText) return;
         const label = LANG_LABEL[p.lang] || p.lang;
-        const header = `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
+        const header = p.sameLang
+          ? `**Shotcall** (${LANG_LABEL[src] || src})`
+          : `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
         await postTextToChannel(guild, p.channelId, `${header}\n${p.text}`);
         log(`Chat ${src}→${p.lang} @ ${p.channelId}: ${p.text.slice(0, 100)}`);
       }),
     ),
     Promise.all(
       payloads.map(async (p) => {
+        if (!p.speak) {
+          p.mp3 = null;
+          return;
+        }
         try {
           p.mp3 = await synthesizeSpeechBuffer(p.text);
           log(`TTS ready ${p.lang}: ${p.mp3.length} bytes`);
@@ -1049,33 +1111,32 @@ async function reconcileMidlandVoice(guild) {
 
   const sc = await findActiveShotcaller(guild);
   const connection = getVoiceConnection(guild.id);
+  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
+  const botVs = botId ? guild.voiceStates.cache.get(botId) : null;
+  const botChannelId = botVs?.channelId
+    ? String(botVs.channelId)
+    : (connection?.joinConfig?.channelId ? String(connection.joinConfig.channelId) : null);
 
   if (sc) {
     cancelScheduledLeave();
+    // Never stay blocked while a shotcaller is live — always follow them
     if (isKickCooldownActive()) {
-      const secs = Math.ceil((suppressAutoJoinUntil - Date.now()) / 1000);
-      warn(`Shotcaller in #${sc.lang} but kick cooldown active (${secs}s) — will follow after`);
-      return;
+      clearKickCooldown();
+      log('Shotcaller active — cleared kick cooldown');
     }
     if (delivering) return;
-    const inRightChannel = connection && String(connection.joinConfig?.channelId) === String(sc.channelId);
+
+    const inRightChannel = botChannelId && botChannelId === String(sc.channelId);
     if (!inRightChannel) {
-      log(`Follow shotcaller ${sc.userId} → ${sc.lang} (${sc.channelId})`);
-      const vs = guild.voiceStates.cache.get(sc.userId);
-      log(`Shotcaller voice flags: ${describeVoiceState(vs)}`);
-      const conn = await joinChannel(guild, sc.channelId);
-      if (conn) {
-        attachReceiver(conn, guild);
-      } else {
-        warn(`Follow failed — could not join ${sc.lang} (${sc.channelId})`);
-      }
+      await forceFollowShotcaller(guild, 'Reconcile');
     } else {
-      attachReceiver(connection, guild);
+      if (connection) attachReceiver(connection, guild);
+      else await forceFollowShotcaller(guild, 'Reconcile missing connection');
     }
     return;
   }
 
-  if (connection) {
+  if (connection || (botChannelId && LANG_CHANNEL_IDS.has(botChannelId))) {
     log('No shotcaller in language booths — scheduling leave');
     scheduleLeaveIfNoShotcaller(guild);
   }
@@ -1144,7 +1205,7 @@ async function init(client) {
   log(`Language booths: ${EVENT_LANGS.map((l) => `${l}=${CHANNEL_BY_LANG[l]}`).join(', ')}`);
   log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → chat+TTS ElevenLabs(${ELEVENLABS_VOICE_ID} / ${ELEVENLABS_MODEL_ID})`);
   log(`ElevenLabs key: ${ELEVENLABS_API_KEY ? `set (len=${ELEVENLABS_API_KEY.length})` : 'MISSING'}`);
-  log(`Kick cooldown ${KICK_REJOIN_COOLDOWN_MS}ms then auto-follow; reconcile every ${RECONCILE_INTERVAL_MS}ms`);
+  log(`Kick auto-rejoin ${KICK_REJOIN_COOLDOWN_MS}ms; hard follow reconcile every ${RECONCILE_INTERVAL_MS}ms`);
   try {
     const report = generateDependencyReport();
     if (report.includes('ffmpeg') || report.includes('FFmpeg')) {
