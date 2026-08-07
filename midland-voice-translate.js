@@ -82,7 +82,7 @@ const ELEVENLABS_MODEL_ID = String(
 ).trim();
 const DEEPGRAM_MODEL = String(process.env.DEEPGRAM_MODEL || 'nova-3').trim();
 
-const SILENCE_END_MS = Math.max(300, parseInt(process.env.MIDLAND_VOICE_SILENCE_MS || '550', 10) || 550);
+const SILENCE_END_MS = Math.max(250, parseInt(process.env.MIDLAND_VOICE_SILENCE_MS || '400', 10) || 400);
 const MIN_PCM_BYTES = Math.max(32000, parseInt(process.env.MIDLAND_VOICE_MIN_PCM_BYTES || '64000', 10) || 64000);
 /** Hard cap on one shotcaller utterance capture (open-mic / never-silence). */
 const MAX_UTTERANCE_MS = Math.max(3000, parseInt(process.env.MIDLAND_VOICE_MAX_UTTERANCE_MS || '12000', 10) || 12000);
@@ -341,25 +341,37 @@ function ensureClients() {
 }
 
 async function fetchMember(guild, userId) {
+  const id = String(userId);
+  const cached = guild.members.cache.get(id);
+  if (cached) return cached;
   try {
-    return await guild.members.fetch(userId);
+    return await guild.members.fetch(id);
   } catch (err) {
-    debug(`Member fetch failed for ${userId}:`, err.message);
+    debug(`Member fetch failed for ${id}:`, err.message);
     return null;
   }
 }
 
-async function memberHasShotcallerRole(guild, userId) {
-  const member = await fetchMember(guild, userId);
-  if (!member || member.user?.bot) return false;
-  return member.roles.cache.has(SHOTCALLER_ROLE_ID);
+function memberHasRole(member, roleId) {
+  return Boolean(member && !member.user?.bot && member.roles.cache.has(roleId));
 }
 
-async function memberHasVerifiedRole(guild, userId) {
+/** Prefer VoiceState.member / cache — avoid Discord REST on the hot relay path. */
+async function resolveMember(guild, userId, vs = null) {
+  if (vs?.member) return vs.member;
+  const id = String(userId);
+  return guild.members.cache.get(id) || fetchMember(guild, id);
+}
+
+async function memberHasShotcallerRole(guild, userId, vs = null) {
+  const member = await resolveMember(guild, userId, vs);
+  return memberHasRole(member, SHOTCALLER_ROLE_ID);
+}
+
+async function memberHasVerifiedRole(guild, userId, vs = null) {
   if (!VERIFIED_ROLE_ID) return true;
-  const member = await fetchMember(guild, userId);
-  if (!member || member.user?.bot) return false;
-  return member.roles.cache.has(VERIFIED_ROLE_ID);
+  const member = await resolveMember(guild, userId, vs);
+  return memberHasRole(member, VERIFIED_ROLE_ID);
 }
 
 /** One pass over voice states → set of language booth IDs with a verified listener. */
@@ -374,14 +386,20 @@ async function getVerifiedOccupiedChannelIds(guild) {
     const uid = String(vs.id);
     if (botId && uid === botId) continue;
     if (vs.member?.user?.bot) continue;
+    // Fast path: role already on the voice-state member object
+    if (vs.member && memberHasRole(vs.member, VERIFIED_ROLE_ID)) {
+      occupied.add(chId);
+      continue;
+    }
+    if (vs.member && VERIFIED_ROLE_ID) continue; // member present but not verified
     pending.push(
       (async () => {
-        if (await memberHasVerifiedRole(guild, uid)) occupied.add(chId);
+        if (await memberHasVerifiedRole(guild, uid, vs)) occupied.add(chId);
       })(),
     );
   }
 
-  await Promise.all(pending);
+  if (pending.length) await Promise.all(pending);
   return occupied;
 }
 
@@ -395,6 +413,7 @@ async function findActiveShotcaller(guild) {
   const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
   const found = [];
   const boothCounts = {};
+  const checks = [];
 
   for (const vs of g.voiceStates.cache.values()) {
     const chId = String(vs.channelId || '');
@@ -404,10 +423,24 @@ async function findActiveShotcaller(guild) {
     if (vs.member?.user?.bot) continue;
     const lang = LANG_BY_CHANNEL.get(chId) || '?';
     boothCounts[lang] = (boothCounts[lang] || 0) + 1;
-    if (await memberHasShotcallerRole(g, uid)) {
+
+    // Fast path: shotcaller role on cached voice member
+    if (vs.member && memberHasRole(vs.member, SHOTCALLER_ROLE_ID)) {
       found.push({ userId: uid, channelId: chId, lang: LANG_BY_CHANNEL.get(chId) || 'en' });
+      continue;
     }
+    if (vs.member) continue; // human in booth, not shotcaller — no REST
+
+    checks.push(
+      (async () => {
+        if (await memberHasShotcallerRole(g, uid, vs)) {
+          found.push({ userId: uid, channelId: chId, lang: LANG_BY_CHANNEL.get(chId) || 'en' });
+        }
+      })(),
+    );
   }
+
+  if (checks.length) await Promise.all(checks);
 
   // Fallback: channel.members if voiceStates cache is empty/stale after reconnect
   if (!found.length) {
@@ -973,8 +1006,11 @@ function startListeningToUser(connection, guild, userId) {
 async function relayShotcall(guild, userId, transcript, sourceLang) {
   const t0 = Date.now();
   const src = normalizeLang(sourceLang) || 'en';
-  const sc = await findActiveShotcaller(guild);
-  const homeId = sc?.channelId || getVoiceConnection(guild.id)?.joinConfig?.channelId || null;
+  // Speaker's booth from Discord voice state — do not re-scan every member (was ~12s)
+  const speakerVs = guild.voiceStates.cache.get(String(userId));
+  const homeId = speakerVs?.channelId
+    ? String(speakerVs.channelId)
+    : (getBotDiscordChannelId(guild) || getVoiceConnection(guild.id)?.joinConfig?.channelId || null);
   const homeLang = homeId ? (LANG_BY_CHANNEL.get(String(homeId)) || '') : '';
   homeChannelIdWhileDelivering = homeId;
 
@@ -1055,6 +1091,18 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
       // (English awareness TTS only if EN booth has verified members).
       const speak = Boolean(c.hasAudience) && !(c.isHome && c.sameLang);
       const postText = Boolean(c.hasAudience) || c.wantEnglishAwareness;
+
+      // Post chat as soon as this language is ready — don't wait for siblings/TTS
+      if (postText) {
+        const label = LANG_LABEL[c.lang] || c.lang;
+        const header = c.sameLang
+          ? `**Shotcall** (${LANG_LABEL[src] || src})`
+          : `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
+        void postTextToChannel(guild, c.channelId, `${header}\n${text}`)
+          .then(() => log(`Chat ${src}→${c.lang} @ ${c.channelId}: ${text.slice(0, 100)}`))
+          .catch((err) => warn(`Chat ${c.lang} failed:`, err.message || err));
+      }
+
       return { ...c, text, speak, postText };
     }),
   );
@@ -1068,42 +1116,29 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
 
   log(
     `Relay ${src} → ${payloads.map((p) => `${p.lang}${p.speak ? '' : '(text)'}`).join(',')} `
-    + `(${Date.now() - t0}ms to translate)`,
+    + `(${Date.now() - t0}ms to translate+chat-start)`,
   );
 
-  // Chat posts + TTS synth in parallel
-  await Promise.all([
-    Promise.all(
-      payloads.map(async (p) => {
-        if (!p.postText) return;
-        const label = LANG_LABEL[p.lang] || p.lang;
-        const header = p.sameLang
-          ? `**Shotcall** (${LANG_LABEL[src] || src})`
-          : `**Shotcall** (${LANG_LABEL[src] || src} → ${label})`;
-        await postTextToChannel(guild, p.channelId, `${header}\n${p.text}`);
-        log(`Chat ${src}→${p.lang} @ ${p.channelId}: ${p.text.slice(0, 100)}`);
-      }),
-    ),
-    Promise.all(
-      payloads.map(async (p) => {
-        if (!p.speak) {
-          p.mp3 = null;
-          return;
+  // TTS synth in parallel (chat already fired)
+  await Promise.all(
+    payloads.map(async (p) => {
+      if (!p.speak) {
+        p.mp3 = null;
+        return;
+      }
+      try {
+        p.mp3 = await synthesizeSpeechBuffer(p.text);
+        log(`TTS ready ${p.lang}: ${p.mp3.length} bytes`);
+      } catch (err) {
+        const body = err?.body ? ` body=${JSON.stringify(err.body).slice(0, 200)}` : '';
+        warn(`TTS synth ${p.lang} failed:`, `${err.message || err}${body}`);
+        if (/401|unauthorized|invalid/i.test(String(err.message || ''))) {
+          warn('ElevenLabs 401 — check ELEVENLABS_API_KEY on Render (valid key from elevenlabs.io)');
         }
-        try {
-          p.mp3 = await synthesizeSpeechBuffer(p.text);
-          log(`TTS ready ${p.lang}: ${p.mp3.length} bytes`);
-        } catch (err) {
-          const body = err?.body ? ` body=${JSON.stringify(err.body).slice(0, 200)}` : '';
-          warn(`TTS synth ${p.lang} failed:`, `${err.message || err}${body}`);
-          if (/401|unauthorized|invalid/i.test(String(err.message || ''))) {
-            warn('ElevenLabs 401 — check ELEVENLABS_API_KEY on Render (valid key from elevenlabs.io)');
-          }
-          p.mp3 = null;
-        }
-      }),
-    ),
-  ]);
+        p.mp3 = null;
+      }
+    }),
+  );
 
   const speakable = payloads.filter((p) => p.mp3);
   if (!speakable.length) {
@@ -1170,10 +1205,12 @@ async function processUtterance({ guild, userId, pcm }) {
     log(`Skip short utterance from ${userId} (${pcm?.length || 0} bytes, need ≥${MIN_PCM_BYTES})`);
     return;
   }
-  if (!(await memberHasShotcallerRole(guild, userId))) return;
+  const vs = guild.voiceStates.cache.get(String(userId));
+  if (!(await memberHasShotcallerRole(guild, userId, vs))) return;
 
-  const sc = await findActiveShotcaller(guild);
-  const boothLang = sc?.userId === String(userId) ? (sc.lang || '') : '';
+  const boothLang = vs?.channelId
+    ? (LANG_BY_CHANNEL.get(String(vs.channelId)) || '')
+    : '';
 
   const wav = pcmToWav(pcm);
   log(`STT sending ${(wav.length / 1024).toFixed(1)}KB wav for shotcaller ${userId}…`);
