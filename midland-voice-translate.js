@@ -29,7 +29,6 @@ const {
 const prism = require('prism-media');
 const { DeepgramClient } = require('@deepgram/sdk');
 const deepl = require('deepl-node');
-const { ElevenLabsClient } = require('elevenlabs');
 
 try {
   const ffmpegPath = require('ffmpeg-static');
@@ -38,6 +37,24 @@ try {
   }
 } catch {
   /* optional */
+}
+
+/** Strip Render/dotenv paste artifacts that cause silent 401s. */
+function sanitizeSecret(raw) {
+  let s = String(raw || '').trim();
+  if (
+    (s.startsWith('"') && s.endsWith('"'))
+    || (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  if (/^bearer\s+/i.test(s)) s = s.replace(/^bearer\s+/i, '').trim();
+  return s.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+}
+
+function describeApiKey(key) {
+  if (!key) return 'MISSING';
+  return `set (len=${key.length}, prefix=${key.slice(0, 4)}…, sk_=${key.startsWith('sk_')})`;
 }
 
 const MIDLAND_EU_GUILD_ID = String(process.env.MIDLAND_EU_GUILD_ID || '1045040260268163194').trim();
@@ -71,9 +88,13 @@ const LANG_CHANNEL_IDS = new Set(Object.values(CHANNEL_BY_LANG).filter(Boolean))
 
 const EVENT_LANGS = Object.keys(CHANNEL_BY_LANG); // en, ru, de, pl, fr, es, pt, zh, it
 
-const DEEPGRAM_API_KEY = String(process.env.DEEPGRAM_API_KEY || '').trim();
-const DEEPL_AUTH_KEY = String(process.env.DEEPL_AUTH_KEY || process.env.DEEPL_API_KEY || '').trim();
-const ELEVENLABS_API_KEY = String(process.env.ELEVENLABS_API_KEY || '').trim();
+const DEEPGRAM_API_KEY = sanitizeSecret(process.env.DEEPGRAM_API_KEY);
+const DEEPL_AUTH_KEY = sanitizeSecret(process.env.DEEPL_AUTH_KEY || process.env.DEEPL_API_KEY);
+const ELEVENLABS_API_KEY = sanitizeSecret(
+  process.env.ELEVENLABS_API_KEY
+  || process.env.ELEVEN_LABS_API_KEY
+  || process.env.XI_API_KEY,
+);
 const ELEVENLABS_VOICE_ID = String(
   process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL',
 ).trim();
@@ -148,7 +169,6 @@ const LANG_LABEL = {
 let clientRef = null;
 let deepgram = null;
 let deeplClient = null;
-let eleven = null;
 let audioPlayer = null;
 let playing = false;
 let delivering = false; // touring language channels for TTS
@@ -326,7 +346,6 @@ function ensureClients() {
   if (!ENABLED) return false;
   if (!deepgram) deepgram = new DeepgramClient({ apiKey: DEEPGRAM_API_KEY });
   if (!deeplClient) deeplClient = new deepl.DeepLClient(DEEPL_AUTH_KEY);
-  if (!eleven) eleven = new ElevenLabsClient({ apiKey: ELEVENLABS_API_KEY });
   if (!audioPlayer) {
     audioPlayer = createAudioPlayer();
     audioPlayer.on('error', (err) => {
@@ -626,20 +645,6 @@ async function translateText(text, sourceLangHint, targetCode) {
   }
 }
 
-function toNodeReadable(audio) {
-  if (!audio) throw new Error('Empty TTS audio');
-  if (Buffer.isBuffer(audio)) return Readable.from(audio);
-  if (typeof audio.pipe === 'function') return audio;
-  if (typeof Readable.fromWeb === 'function') {
-    if (typeof audio.getReader === 'function') return Readable.fromWeb(audio);
-    // ElevenLabs UniversalStreamWrapper often exposes .readableStream
-    if (audio.readableStream && typeof audio.readableStream.getReader === 'function') {
-      return Readable.fromWeb(audio.readableStream);
-    }
-  }
-  return Readable.from(audio);
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -654,23 +659,77 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-/** Buffer ElevenLabs MP3 fully — streaming wrappers often break discord.js ffmpeg demux. */
+/** Buffer ElevenLabs MP3 via direct REST — clearer auth errors than the SDK wrapper. */
 async function synthesizeSpeechBuffer(text) {
   return withTimeout((async () => {
-    const audio = await eleven.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
-      text,
-      model_id: ELEVENLABS_MODEL_ID,
-      output_format: 'mp3_44100_128',
+    if (!ELEVENLABS_API_KEY) throw new Error('ELEVENLABS_API_KEY is empty');
+    const voiceId = encodeURIComponent(ELEVENLABS_VOICE_ID);
+    const url =
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`
+      + `?output_format=${encodeURIComponent('mp3_44100_128')}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': ELEVENLABS_API_KEY,
+        'Content-Type': 'application/json',
+        Accept: 'audio/mpeg',
+      },
+      body: JSON.stringify({
+        text: String(text || '').slice(0, 2500),
+        model_id: ELEVENLABS_MODEL_ID,
+      }),
     });
-    const stream = toNodeReadable(audio);
-    const chunks = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      let detail = errText.slice(0, 400) || res.statusText || 'no body';
+      try {
+        const j = JSON.parse(errText);
+        detail = j?.detail?.message
+          || j?.detail?.status
+          || (typeof j?.detail === 'string' ? j.detail : null)
+          || detail;
+      } catch {
+        /* keep text */
+      }
+      const err = new Error(`ElevenLabs TTS HTTP ${res.status}: ${detail}`);
+      err.statusCode = res.status;
+      throw err;
     }
-    const buf = Buffer.concat(chunks);
+    const buf = Buffer.from(await res.arrayBuffer());
     if (!buf.length) throw new Error('ElevenLabs returned empty audio');
     return buf;
   })(), 25_000, 'ElevenLabs TTS');
+}
+
+async function probeElevenLabsAuth() {
+  if (!ELEVENLABS_API_KEY) {
+    warn('ElevenLabs auth probe skipped — key missing');
+    return;
+  }
+  try {
+    const res = await fetch('https://api.elevenlabs.io/v1/user', {
+      headers: { 'xi-api-key': ELEVENLABS_API_KEY },
+    });
+    const body = await res.text().catch(() => '');
+    if (res.ok) {
+      log(`ElevenLabs auth OK (HTTP ${res.status})`);
+      return;
+    }
+    let detail = body.slice(0, 300) || res.statusText;
+    try {
+      const j = JSON.parse(body);
+      detail = j?.detail?.message || j?.detail?.status || detail;
+    } catch {
+      /* keep */
+    }
+    warn(`ElevenLabs auth FAILED HTTP ${res.status}: ${detail}`);
+    warn(
+      'Fix Render ELEVENLABS_API_KEY: paste the raw key only (no quotes). '
+      + 'If this key was shared in chat, revoke it and create a new one.',
+    );
+  } catch (err) {
+    warn('ElevenLabs auth probe failed:', err.message || err);
+  }
 }
 
 async function playInConnection(connection, mp3Buffer) {
@@ -1132,8 +1191,11 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
       } catch (err) {
         const body = err?.body ? ` body=${JSON.stringify(err.body).slice(0, 200)}` : '';
         warn(`TTS synth ${p.lang} failed:`, `${err.message || err}${body}`);
-        if (/401|unauthorized|invalid/i.test(String(err.message || ''))) {
-          warn('ElevenLabs 401 — check ELEVENLABS_API_KEY on Render (valid key from elevenlabs.io)');
+        if (/401|unauthorized|invalid/i.test(String(err.message || '')) || err.statusCode === 401) {
+          warn(
+            'ElevenLabs 401 — Render ELEVENLABS_API_KEY must be the raw key only (no quotes). '
+            + 'Revoke keys pasted in chat and create a new one.',
+          );
         }
         p.mp3 = null;
       }
@@ -1383,8 +1445,9 @@ async function init(client) {
   log(`Verified audience role ${VERIFIED_ROLE_ID} (MIDLAND_VERIFYED_ROLE_ID) — text+TTS only to occupied booths`);
   log(`Language booths: ${EVENT_LANGS.map((l) => `${l}=${CHANNEL_BY_LANG[l]}`).join(', ')}`);
   log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → chat+TTS ElevenLabs(${ELEVENLABS_VOICE_ID} / ${ELEVENLABS_MODEL_ID})`);
-  log(`ElevenLabs key: ${ELEVENLABS_API_KEY ? `set (len=${ELEVENLABS_API_KEY.length})` : 'MISSING'}`);
+  log(`ElevenLabs key: ${describeApiKey(ELEVENLABS_API_KEY)}`);
   log(`Kick auto-rejoin ${KICK_REJOIN_COOLDOWN_MS}ms; hard follow reconcile every ${RECONCILE_INTERVAL_MS}ms`);
+  await probeElevenLabsAuth();
   try {
     const report = generateDependencyReport();
     if (report.includes('ffmpeg') || report.includes('FFmpeg')) {
