@@ -152,6 +152,11 @@ let eleven = null;
 let audioPlayer = null;
 let playing = false;
 let delivering = false; // touring language channels for TTS
+let deliveringSince = 0;
+const DELIVERING_STUCK_MS = Math.max(
+  60_000,
+  parseInt(process.env.MIDLAND_VOICE_DELIVERING_STUCK_MS || '180000', 10) || 180000,
+);
 const activeListeners = new Set();
 const processQueue = [];
 let queueRunning = false;
@@ -177,6 +182,8 @@ const RECONCILE_INTERVAL_MS = Math.max(
 let homeChannelIdWhileDelivering = null;
 let reconcileTimer = null;
 let kickFollowTimer = null;
+/** After leaveVoice(), ignore “bot left booths” recovery until this time. */
+let expectingFullLeaveUntil = 0;
 
 function beginVoiceHop() {
   intentionalLeave = true;
@@ -193,6 +200,15 @@ function isVoiceHopGuardActive() {
   return intentionalLeave || Date.now() < hopGuardUntil || Boolean(joinPromise) || delivering;
 }
 
+/** True when delivering flag has been held too long (or never stamped) — unblock follow. */
+function unstickDeliveringIfNeeded(reason) {
+  if (!delivering) return false;
+  const age = deliveringSince ? Date.now() - deliveringSince : DELIVERING_STUCK_MS + 1;
+  if (age < DELIVERING_STUCK_MS) return false;
+  resetVoicePipelineState(reason || `delivering stuck ${Math.round(age / 1000)}s`);
+  return true;
+}
+
 function isKickCooldownActive() {
   return Date.now() < suppressAutoJoinUntil;
 }
@@ -205,6 +221,22 @@ function clearKickCooldown() {
   }
 }
 
+/** Unstick flags that can permanently block follow/listen after a disconnect. */
+function resetVoicePipelineState(reason) {
+  const wasDelivering = delivering;
+  const hadJoin = Boolean(joinPromise);
+  delivering = false;
+  deliveringSince = 0;
+  playing = false;
+  joinPromise = null;
+  intentionalLeave = false;
+  hopGuardUntil = 0;
+  activeListeners.clear();
+  if (wasDelivering || hadJoin) {
+    warn(`Reset voice pipeline (${reason}) deliveringWas=${wasDelivering} joinPromiseWas=${hadJoin}`);
+  }
+}
+
 function armKickCooldown(reason) {
   suppressAutoJoinUntil = Date.now() + KICK_REJOIN_COOLDOWN_MS;
   warn(
@@ -214,25 +246,41 @@ function armKickCooldown(reason) {
   kickFollowTimer = setTimeout(() => {
     kickFollowTimer = null;
     clearKickCooldown();
-    if (!clientRef || delivering) return;
+    if (!clientRef) return;
+    resetVoicePipelineState('post-kick timer');
     void clientRef.guilds.fetch(MIDLAND_EU_GUILD_ID)
       .then((g) => {
         log('Kick cooldown ended — forcing follow reconcile');
-        return reconcileMidlandVoice(g);
+        return forceFollowShotcaller(g, 'Post-kick');
       })
       .catch((err) => warn('Post-kick follow failed:', err.message || err));
   }, KICK_REJOIN_COOLDOWN_MS + 100);
 }
 
 async function forceFollowShotcaller(guild, reason) {
-  const sc = await findActiveShotcaller(guild);
-  if (!sc) return null;
+  const g = clientRef?.guilds.cache.get(String(guild.id)) || guild;
+  const sc = await findActiveShotcaller(g);
+  if (!sc) {
+    log(`${reason}: no shotcaller in language booths right now`);
+    return null;
+  }
   clearKickCooldown();
-  log(`${reason}: follow shotcaller ${sc.userId} → ${sc.lang} (${sc.channelId})`);
-  const conn = await joinChannel(guild, sc.channelId);
-  if (conn) attachReceiver(conn, guild);
+  const vs = g.voiceStates.cache.get(sc.userId);
+  log(`${reason}: follow shotcaller ${sc.userId} → ${sc.lang} (${sc.channelId}) [${describeVoiceState(vs)}]`);
+  const conn = await joinChannel(g, sc.channelId);
+  if (conn) attachReceiver(conn, g);
   else warn(`${reason}: join failed for ${sc.lang}`);
   return conn;
+}
+
+function scheduleForcedFollow(reason, delayMs = 1200) {
+  if (!clientRef) return;
+  setTimeout(() => {
+    if (!clientRef) return;
+    void clientRef.guilds.fetch(MIDLAND_EU_GUILD_ID)
+      .then((g) => forceFollowShotcaller(g, reason))
+      .catch((err) => warn(`${reason} failed:`, err.message || err));
+  }, delayMs);
 }
 
 function log(...args) {
@@ -341,22 +389,50 @@ async function getVerifiedOccupiedChannelIds(guild) {
  * If multiple (shouldn't happen), prefers first found and logs a warning.
  */
 async function findActiveShotcaller(guild) {
+  const g = clientRef?.guilds.cache.get(String(guild.id)) || guild;
   const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
   const found = [];
+  const boothCounts = {};
 
-  for (const vs of guild.voiceStates.cache.values()) {
+  for (const vs of g.voiceStates.cache.values()) {
     const chId = String(vs.channelId || '');
     if (!LANG_CHANNEL_IDS.has(chId)) continue;
     const uid = String(vs.id);
     if (botId && uid === botId) continue;
     if (vs.member?.user?.bot) continue;
-    if (await memberHasShotcallerRole(guild, uid)) {
+    const lang = LANG_BY_CHANNEL.get(chId) || '?';
+    boothCounts[lang] = (boothCounts[lang] || 0) + 1;
+    if (await memberHasShotcallerRole(g, uid)) {
       found.push({ userId: uid, channelId: chId, lang: LANG_BY_CHANNEL.get(chId) || 'en' });
     }
   }
 
+  // Fallback: channel.members if voiceStates cache is empty/stale after reconnect
+  if (!found.length) {
+    for (const [lang, channelId] of Object.entries(CHANNEL_BY_LANG)) {
+      if (!channelId) continue;
+      const channel = g.channels.cache.get(channelId)
+        || await g.channels.fetch(channelId).catch(() => null);
+      if (!channel?.isVoiceBased?.()) continue;
+      const humans = [...channel.members.values()].filter((m) => !m.user.bot);
+      boothCounts[lang] = humans.length;
+      for (const member of humans) {
+        if (member.roles.cache.has(SHOTCALLER_ROLE_ID)
+          || await memberHasShotcallerRole(g, member.id)) {
+          found.push({ userId: member.id, channelId: channel.id, lang });
+        }
+      }
+    }
+  }
+
+  const summary = Object.entries(boothCounts).map(([l, n]) => `${l}:${n}`).join(', ') || 'empty';
   if (found.length > 1) {
     warn(`Multiple shotcallers in booths (${found.length}) — using ${found[0].userId}; only one allowed per event`);
+  }
+  if (found[0]) {
+    log(`Shotcaller ${found[0].userId} in ${found[0].lang} (booths [${summary}])`);
+  } else {
+    debug(`No shotcaller in language booths [${summary}]`);
   }
   return found[0] || null;
 }
@@ -616,20 +692,15 @@ function wireConnectionHandlers(connection, guild) {
   connection.removeAllListeners(VoiceConnectionStatus.Disconnected);
   connection.on('error', (err) => warn('Voice connection error:', err.message || err));
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    if (isVoiceHopGuardActive() || isKickCooldownActive()) return;
+    // Mid-hop / intentional leave — Discord fires Disconnected; do not fight it
+    if (intentionalLeave || Date.now() < hopGuardUntil) return;
+    if (isKickCooldownActive()) return;
     try {
-      const sc = await findActiveShotcaller(guild);
-      if (sc) {
-        warn('Voice disconnected unexpectedly — rejoining shotcaller booth');
-        cancelScheduledLeave();
-        setTimeout(() => {
-          if (!isKickCooldownActive() && !delivering) {
-            void joinChannel(guild, sc.channelId).then((c) => {
-              if (c) attachReceiver(c, guild);
-            });
-          }
-        }, 750);
-      }
+      unstickDeliveringIfNeeded('disconnect while delivering');
+      warn('Voice disconnected unexpectedly — scheduling forced rejoin');
+      cancelScheduledLeave();
+      resetVoicePipelineState('unexpected disconnect');
+      scheduleForcedFollow('Voice-disconnect rejoin', 1000);
     } catch (err) {
       warn('Reconnect check failed:', err.message || err);
     }
@@ -654,8 +725,16 @@ function stopAudioPlayer() {
 async function joinChannel(guild, channelId) {
   if (!ensureClients()) return null;
 
-  while (joinPromise) {
-    await joinPromise.catch(() => null);
+  if (joinPromise) {
+    const waited = await Promise.race([
+      joinPromise.catch(() => null),
+      sleep(15_000).then(() => 'timeout'),
+    ]);
+    if (waited === 'timeout') {
+      warn('joinPromise stuck >15s — clearing so follow can proceed');
+      joinPromise = null;
+      intentionalLeave = false;
+    }
   }
 
   const wantId = String(channelId);
@@ -780,6 +859,7 @@ async function leaveVoice(guildId, reason) {
   cancelScheduledLeave();
   const connection = getVoiceConnection(guildId);
   if (!connection) return;
+  expectingFullLeaveUntil = Date.now() + 5000;
   beginVoiceHop();
   try {
     connection.destroy();
@@ -1006,6 +1086,7 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
   log(`Text+TTS synth done in ${Date.now() - t0}ms (${speakable.length} voice targets)`);
 
   delivering = true;
+  deliveringSince = Date.now();
   try {
     for (const p of speakable) {
       try {
@@ -1047,6 +1128,7 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
       warn('Return to shotcaller failed:', err.message || err);
     } finally {
       delivering = false;
+      deliveringSince = 0;
       homeChannelIdWhileDelivering = null;
       log(`Relay complete in ${Date.now() - t0}ms`);
     }
@@ -1109,6 +1191,8 @@ async function drainQueue() {
 async function reconcileMidlandVoice(guild) {
   if (!ENABLED || !guild || String(guild.id) !== MIDLAND_EU_GUILD_ID) return;
 
+  unstickDeliveringIfNeeded('reconcile');
+
   const sc = await findActiveShotcaller(guild);
   const connection = getVoiceConnection(guild.id);
   const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
@@ -1124,14 +1208,22 @@ async function reconcileMidlandVoice(guild) {
       clearKickCooldown();
       log('Shotcaller active — cleared kick cooldown');
     }
-    if (delivering) return;
+    // Mid-TTS tour: only skip if delivering is fresh; stuck flag already cleared above
+    if (delivering) {
+      debug('Reconcile skipped — TTS tour in progress');
+      return;
+    }
 
     const inRightChannel = botChannelId && botChannelId === String(sc.channelId);
     if (!inRightChannel) {
+      log(`Reconcile: bot in ${botChannelId || 'none'} — need ${sc.lang} (${sc.channelId})`);
       await forceFollowShotcaller(guild, 'Reconcile');
     } else {
-      if (connection) attachReceiver(connection, guild);
-      else await forceFollowShotcaller(guild, 'Reconcile missing connection');
+      if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
+        attachReceiver(connection, guild);
+      } else {
+        await forceFollowShotcaller(guild, 'Reconcile missing connection');
+      }
     }
     return;
   }
@@ -1155,12 +1247,23 @@ async function onVoiceStateUpdate(oldState, newState) {
     const leftLangBooth =
       LANG_CHANNEL_IDS.has(String(oldState.channelId || ''))
       && !LANG_CHANNEL_IDS.has(String(newState.channelId || ''));
-    // Ignore intentional TTS hops / leaves; only real removals arm a short cooldown
-    if (leftLangBooth && !isVoiceHopGuardActive()) {
-      armKickCooldown('Bot removed from language booth');
+    if (leftLangBooth) {
       cancelScheduledLeave();
+      if (Date.now() < expectingFullLeaveUntil) {
+        debug(`Bot left booths as expected (${oldState.channelId} → ${newState.channelId || 'none'})`);
+      } else if (joinPromise || intentionalLeave) {
+        // destroy+recreate mid-join briefly leaves all booths — do not reset the join
+        debug(`Bot briefly out mid-join (${oldState.channelId} → ${newState.channelId || 'none'})`);
+      } else {
+        warn(
+          `Bot left language booths (${oldState.channelId} → ${newState.channelId || 'none'})`
+          + ` — reset + schedule rejoin (delivering=${delivering})`,
+        );
+        resetVoicePipelineState('bot left language booths');
+        armKickCooldown('Bot removed from language booth');
+        scheduleForcedFollow('Bot-disconnect rejoin', 1500);
+      }
     }
-    debug('Ignore bot own voiceStateUpdate');
     return;
   }
 
@@ -1217,7 +1320,9 @@ async function init(client) {
 
   if (reconcileTimer) clearInterval(reconcileTimer);
   reconcileTimer = setInterval(() => {
-    if (!clientRef || delivering) return;
+    if (!clientRef) return;
+    unstickDeliveringIfNeeded('periodic');
+    if (delivering) return;
     void clientRef.guilds.fetch(MIDLAND_EU_GUILD_ID)
       .then((g) => reconcileMidlandVoice(g))
       .catch((err) => debug('Periodic reconcile failed:', err.message || err));
