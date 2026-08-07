@@ -160,9 +160,54 @@ let queueRunning = false;
 let leaveTimer = null;
 let joinPromise = null;
 let intentionalLeave = false;
-/** After a kick/force-remove, do not auto-join until shotcaller fully leaves all booths. */
-let suppressAutoJoinAfterKick = false;
+/** Ignore disconnect VSUs as kicks until this time (ms since epoch). */
+let hopGuardUntil = 0;
+/**
+ * After a real kick/force-remove, briefly delay auto-follow (ms since epoch).
+ * Was a sticky boolean that blocked rejoin forever while the shotcaller stayed in booth.
+ */
+let suppressAutoJoinUntil = 0;
+const KICK_REJOIN_COOLDOWN_MS = Math.max(
+  0,
+  parseInt(process.env.MIDLAND_VOICE_KICK_COOLDOWN_MS || '8000', 10) || 8000,
+);
+const RECONCILE_INTERVAL_MS = Math.max(
+  5000,
+  parseInt(process.env.MIDLAND_VOICE_RECONCILE_MS || '10000', 10) || 10000,
+);
 let homeChannelIdWhileDelivering = null;
+let reconcileTimer = null;
+
+function beginVoiceHop() {
+  intentionalLeave = true;
+  hopGuardUntil = Date.now() + 4000;
+}
+
+function endVoiceHop() {
+  intentionalLeave = false;
+  // Late Discord VSUs for destroy/move must not look like kicks
+  hopGuardUntil = Date.now() + 2000;
+}
+
+function isVoiceHopGuardActive() {
+  return intentionalLeave || Date.now() < hopGuardUntil || Boolean(joinPromise) || delivering;
+}
+
+function isKickCooldownActive() {
+  return Date.now() < suppressAutoJoinUntil;
+}
+
+function armKickCooldown(reason) {
+  suppressAutoJoinUntil = Date.now() + KICK_REJOIN_COOLDOWN_MS;
+  warn(
+    `${reason} — auto-rejoin cooldown ${Math.round(KICK_REJOIN_COOLDOWN_MS / 1000)}s `
+    + `(then follow shotcaller again)`,
+  );
+}
+
+function clearKickCooldown() {
+  suppressAutoJoinUntil = 0;
+}
 
 function log(...args) {
   console.log('[midland-voice]', ...args);
@@ -307,15 +352,19 @@ function scheduleLeaveIfNoShotcaller(guild) {
         const sc = await findActiveShotcaller(fresh);
         if (sc) {
           log(`Stay — shotcaller still in #${sc.lang} (${sc.channelId})`);
-          if (!suppressAutoJoinAfterKick) {
+          if (!isKickCooldownActive()) {
             const conn = getVoiceConnection(fresh.id);
             if (!conn || conn.joinConfig?.channelId !== sc.channelId) {
               await joinChannel(fresh, sc.channelId);
+              const c = getVoiceConnection(fresh.id);
+              if (c) attachReceiver(c, fresh);
             }
+          } else {
+            warn('Stay: kick cooldown still active — will follow on next reconcile');
           }
           return;
         }
-        suppressAutoJoinAfterKick = false; // session ended — allow join next time
+        clearKickCooldown();
         await leaveVoice(fresh.id, 'no shotcaller in language booths');
       } catch (err) {
         warn('Debounced leave failed:', err.message || err);
@@ -541,14 +590,14 @@ function wireConnectionHandlers(connection, guild) {
   connection.removeAllListeners(VoiceConnectionStatus.Disconnected);
   connection.on('error', (err) => warn('Voice connection error:', err.message || err));
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    if (intentionalLeave || suppressAutoJoinAfterKick || delivering) return;
+    if (isVoiceHopGuardActive() || isKickCooldownActive()) return;
     try {
       const sc = await findActiveShotcaller(guild);
       if (sc) {
         warn('Voice disconnected unexpectedly — rejoining shotcaller booth');
         cancelScheduledLeave();
         setTimeout(() => {
-          if (!suppressAutoJoinAfterKick && !delivering) {
+          if (!isKickCooldownActive() && !delivering) {
             void joinChannel(guild, sc.channelId).then((c) => {
               if (c) attachReceiver(c, guild);
             });
@@ -586,7 +635,7 @@ async function joinChannel(guild, channelId) {
   const wantId = String(channelId);
 
   joinPromise = (async () => {
-    intentionalLeave = true;
+    beginVoiceHop();
     try {
       stopAudioPlayer();
 
@@ -602,14 +651,14 @@ async function joinChannel(guild, channelId) {
           const ok = await waitUntilBotInChannel(guild, wantId, 3_000);
           if (ok || connection.state.status === VoiceConnectionStatus.Ready) {
             connection.subscribe(audioPlayer);
-            intentionalLeave = false;
+            endVoiceHop();
             return connection;
           }
         } else {
           try {
             await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
             connection.subscribe(audioPlayer);
-            intentionalLeave = false;
+            endVoiceHop();
             return connection;
           } catch (err) {
             warn('Wait Ready (same channel) failed:', err.message || err);
@@ -637,7 +686,7 @@ async function joinChannel(guild, channelId) {
               /* still try to use connection if VSU confirmed */
             }
             connection.subscribe(audioPlayer);
-            intentionalLeave = false;
+            endVoiceHop();
             log(`Moved voice → ${LANG_BY_CHANNEL.get(wantId) || '?'} (${wantId})`);
             return connection;
           }
@@ -686,15 +735,14 @@ async function joinChannel(guild, channelId) {
       }
 
       connection.subscribe(audioPlayer);
-      intentionalLeave = false;
+      endVoiceHop();
       log(`Joined voice ${LANG_BY_CHANNEL.get(wantId) || '?'} (${wantId})`);
       return connection;
     } catch (err) {
       warn(`joinChannel(${wantId}) failed:`, err.message || err);
       return null;
     } finally {
-      // If we failed before clearing, still release the intentional flag
-      if (intentionalLeave) intentionalLeave = false;
+      if (intentionalLeave) endVoiceHop();
       joinPromise = null;
     }
   })();
@@ -706,12 +754,14 @@ async function leaveVoice(guildId, reason) {
   cancelScheduledLeave();
   const connection = getVoiceConnection(guildId);
   if (!connection) return;
-  intentionalLeave = true;
+  beginVoiceHop();
   try {
     connection.destroy();
     log(`Left voice (${reason})`);
   } catch (err) {
     warn('Leave failed:', err.message || err);
+  } finally {
+    endVoiceHop();
   }
 }
 
@@ -912,14 +962,14 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
     }
   } finally {
     // Keep delivering=true until we are back with the shotcaller so VSU cannot
-    // treat the hop as a kick and block rejoin via suppressAutoJoinAfterKick.
+    // treat the hop as a kick during the return move.
     try {
       const returnId =
         homeId
         || (await findActiveShotcaller(guild))?.channelId
         || null;
       if (returnId) {
-        suppressAutoJoinAfterKick = false;
+        clearKickCooldown();
         log(`TTS tour done — returning to shotcaller booth ${returnId}`);
         const conn = await joinChannel(guild, returnId);
         if (conn) {
@@ -1002,18 +1052,23 @@ async function reconcileMidlandVoice(guild) {
 
   if (sc) {
     cancelScheduledLeave();
-    if (suppressAutoJoinAfterKick) {
-      debug('Shotcaller present but auto-join suppressed after kick');
+    if (isKickCooldownActive()) {
+      const secs = Math.ceil((suppressAutoJoinUntil - Date.now()) / 1000);
+      warn(`Shotcaller in #${sc.lang} but kick cooldown active (${secs}s) — will follow after`);
       return;
     }
     if (delivering) return;
-    const inRightChannel = connection && connection.joinConfig?.channelId === sc.channelId;
+    const inRightChannel = connection && String(connection.joinConfig?.channelId) === String(sc.channelId);
     if (!inRightChannel) {
       log(`Follow shotcaller ${sc.userId} → ${sc.lang} (${sc.channelId})`);
       const vs = guild.voiceStates.cache.get(sc.userId);
       log(`Shotcaller voice flags: ${describeVoiceState(vs)}`);
       const conn = await joinChannel(guild, sc.channelId);
-      if (conn) attachReceiver(conn, guild);
+      if (conn) {
+        attachReceiver(conn, guild);
+      } else {
+        warn(`Follow failed — could not join ${sc.lang} (${sc.channelId})`);
+      }
     } else {
       attachReceiver(connection, guild);
     }
@@ -1039,10 +1094,9 @@ async function onVoiceStateUpdate(oldState, newState) {
     const leftLangBooth =
       LANG_CHANNEL_IDS.has(String(oldState.channelId || ''))
       && !LANG_CHANNEL_IDS.has(String(newState.channelId || ''));
-    // Ignore intentional TTS hops / leaves; only real removals suppress rejoin
-    if (leftLangBooth && !intentionalLeave && !delivering) {
-      suppressAutoJoinAfterKick = true;
-      warn('Bot removed from language booth — will not auto-rejoin until shotcaller leaves all booths');
+    // Ignore intentional TTS hops / leaves; only real removals arm a short cooldown
+    if (leftLangBooth && !isVoiceHopGuardActive()) {
+      armKickCooldown('Bot removed from language booth');
       cancelScheduledLeave();
     }
     debug('Ignore bot own voiceStateUpdate');
@@ -1053,6 +1107,21 @@ async function onVoiceStateUpdate(oldState, newState) {
     LANG_CHANNEL_IDS.has(String(oldState.channelId || ''))
     || LANG_CHANNEL_IDS.has(String(newState.channelId || ''));
   if (!touched) return;
+
+  // Shotcaller (re)entering a booth clears sticky follow problems from older builds
+  try {
+    if (
+      LANG_CHANNEL_IDS.has(String(newState.channelId || ''))
+      && await memberHasShotcallerRole(guild, changedUserId)
+    ) {
+      if (isKickCooldownActive()) {
+        log('Shotcaller present in booth — clearing kick cooldown to follow');
+        clearKickCooldown();
+      }
+    }
+  } catch {
+    /* ignore */
+  }
 
   try {
     await reconcileMidlandVoice(guild);
@@ -1075,7 +1144,7 @@ async function init(client) {
   log(`Language booths: ${EVENT_LANGS.map((l) => `${l}=${CHANNEL_BY_LANG[l]}`).join(', ')}`);
   log(`Pipeline: Deepgram(${DEEPGRAM_MODEL}) → DeepL → chat+TTS ElevenLabs(${ELEVENLABS_VOICE_ID} / ${ELEVENLABS_MODEL_ID})`);
   log(`ElevenLabs key: ${ELEVENLABS_API_KEY ? `set (len=${ELEVENLABS_API_KEY.length})` : 'MISSING'}`);
-  log('Kick = no auto-rejoin until shotcaller clears booths; unexpected disconnect = rejoin');
+  log(`Kick cooldown ${KICK_REJOIN_COOLDOWN_MS}ms then auto-follow; reconcile every ${RECONCILE_INTERVAL_MS}ms`);
   try {
     const report = generateDependencyReport();
     if (report.includes('ffmpeg') || report.includes('FFmpeg')) {
@@ -1085,8 +1154,17 @@ async function init(client) {
     warn('Could not print voice dependency report:', err.message || err);
   }
 
+  if (reconcileTimer) clearInterval(reconcileTimer);
+  reconcileTimer = setInterval(() => {
+    if (!clientRef || delivering) return;
+    void clientRef.guilds.fetch(MIDLAND_EU_GUILD_ID)
+      .then((g) => reconcileMidlandVoice(g))
+      .catch((err) => debug('Periodic reconcile failed:', err.message || err));
+  }, RECONCILE_INTERVAL_MS);
+
   try {
     const guild = await client.guilds.fetch(MIDLAND_EU_GUILD_ID);
+    clearKickCooldown();
     await reconcileMidlandVoice(guild);
   } catch (err) {
     warn('Startup reconcile failed:', err.message || err);
