@@ -713,6 +713,8 @@ const SAFE_CONTEXT_BASE = [
   'north america', 'south america', 'southeast asia', 'south east asia', 'latin america', 'oceania',
   // GV official server shards (EU / SEA / NA) — nationality labels when server hopping are game talk
   'wolfield', 'wolfied', 'aquilla', 'aquila', 'dukla', 'server hop', 'server hopping', 'server hoppers',
+  // Midland houses — "Germanica" contains substring "manic" (medical-psych); allow house/legio names
+  'germanica', 'legio', 'legio germanica', 'legiogermanica', 'house germanica',
 ];
 function loadSafeContextWords() {
   const fromFile = loadWordsFromFile(process.env.SAFE_CONTEXT_FILE || 'safe-context.txt')
@@ -1302,12 +1304,35 @@ const MEDICAL_PSYCH_INSULT_SUBSTRINGS = [
   'borderline personality',
 ].map(s => s.toLowerCase());
 
+/**
+ * Midland house / Legio names embed "manic" (Germanica). Strip them (incl. leet
+ * G3rm4nica → germanica via normalizeForMatch) before medical-psych substring scan.
+ * Still flags real insults like "you're manic".
+ */
+function scrubMidlandHouseNamesForPsychScan(text) {
+  let t = String(text || '');
+  // Leet / spaced forms before digit→letter normalize (G3rm4nica, LegioGermanica, …)
+  t = t.replace(/l[\W_]*e[\W_]*g[\W_]*i[\W_]*o[\W_]*[\s_-]*g[\W_]*[e3][\W_]*r[\W_]*m[\W_]*[a4][\W_]*n[\W_]*[i1][\W_]*c[\W_]*(?:[a4])?/gi, ' ');
+  t = t.replace(/g[\W_]*[e3][\W_]*r[\W_]*m[\W_]*[a4][\W_]*n[\W_]*[i1][\W_]*c[\W_]*(?:[a4])?/gi, ' ');
+  t = t.replace(/\bl[\W_]*e[\W_]*g[\W_]*i[\W_]*o\b/gi, ' ');
+  // After normalizeForMatch (germanica / germanic / legiogermanica)
+  t = t.replace(/legiogermanica/gi, ' ');
+  t = t.replace(/germanica/gi, ' ');
+  t = t.replace(/germanic/gi, ' ');
+  t = t.replace(/\blegio\b/gi, ' ');
+  return t;
+}
+
 function hasMedicalPsychiatricInsult(text) {
   if (!text || typeof text !== 'string') return false;
-  const lower = text.toLowerCase();
-  const normalized = normalizeForMatch(lower);
+  // Scrub house names first so "House Germanica" / "G3RM4NIC4" do not hit "manic"
+  const lower = scrubMidlandHouseNamesForPsychScan(stripDiacritics(text.toLowerCase()));
+  const normalized = scrubMidlandHouseNamesForPsychScan(normalizeForMatch(lower));
 
-  const compact = normalized.replace(/[^a-z]/g, '');
+  const compact = normalized.replace(/[^a-z]/g, '')
+    .replace(/legiogermanica/g, '')
+    .replace(/germanica/g, '')
+    .replace(/legio/g, '');
   for (const sub of MEDICAL_PSYCH_INSULT_SUBSTRINGS) {
     if (lower.includes(sub)) {
       return true;
@@ -1322,7 +1347,7 @@ function hasMedicalPsychiatricInsult(text) {
   }
   return false;
 }
-console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (banter allowlist excludes retard/retarded).`);
+console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (banter allowlist excludes retard/retarded; Germanica/Legio scrubbed).`);
 
 // Anti-Indian / South-Asian racist slurs & degrading meme terms — no safe-context bypass; evasion-resistant compact scan.
 const INDIAN_ASIAN_SLUR_SUBSTRINGS = [
