@@ -1323,31 +1323,50 @@ function scrubMidlandHouseNamesForPsychScan(text) {
   return t;
 }
 
-function hasMedicalPsychiatricInsult(text) {
-  if (!text || typeof text !== 'string') return false;
-  // Scrub house names first so "House Germanica" / "G3RM4NIC4" do not hit "manic"
-  const lower = scrubMidlandHouseNamesForPsychScan(stripDiacritics(text.toLowerCase()));
-  const normalized = scrubMidlandHouseNamesForPsychScan(normalizeForMatch(lower));
-
-  const compact = normalized.replace(/[^a-z]/g, '')
+/** Letters-only compact form with Midland house/legio names removed (leet-safe). */
+function compactWithoutMidlandHouseNames(text) {
+  const compact = normalizeForMatch(stripDiacritics(String(text || '').toLowerCase()))
+    .replace(/[^a-z]/g, '');
+  return compact
     .replace(/legiogermanica/g, '')
     .replace(/germanica/g, '')
+    .replace(/germanic/g, '')
     .replace(/legio/g, '');
+}
+
+function hasMedicalPsychiatricInsult(text) {
+  if (!text || typeof text !== 'string') return false;
+
+  // Authoritative path for manic/maniac: house names removed from letter-compact text.
+  // This catches HOUSE GERMANICA, G3rm4nica, zero-width/punctuated forms, etc.
+  const compactNoHouse = compactWithoutMidlandHouseNames(text);
+
+  // Scrubbed views for other psych substrings / spaced phrases
+  const lower = scrubMidlandHouseNamesForPsychScan(stripDiacritics(text.toLowerCase()));
+  const normalized = scrubMidlandHouseNamesForPsychScan(normalizeForMatch(lower));
+  const compact = normalized.replace(/[^a-z]/g, '');
+
   for (const sub of MEDICAL_PSYCH_INSULT_SUBSTRINGS) {
-    if (lower.includes(sub)) {
-      return true;
-    }
     const subNorm = normalizeForMatch(sub);
-    if (subNorm.length >= 3 && normalized.includes(subNorm)) {
-      return true;
+    const subCompact = subNorm.replace(/[^a-z]/g, '');
+
+    // manic / maniac only via house-scrubbed compact (Germanica false positive)
+    if (subCompact === 'manic' || subCompact === 'maniac') {
+      if (subCompact.length >= 3 && compactNoHouse.includes(subCompact)) return true;
+      continue;
     }
+
+    if (lower.includes(sub)) return true;
+    if (subNorm.length >= 3 && normalized.includes(subNorm)) return true;
+    if (subCompact.length >= 3 && compactNoHouse.includes(subCompact)) return true;
     if (sub.includes(' ') && sub.replace(/\s+/g, '').length >= 5 && compact.includes(sub.replace(/\s+/g, ''))) {
       return true;
     }
   }
   return false;
 }
-console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (banter allowlist excludes retard/retarded; Germanica/Legio scrubbed).`);
+console.log('Medical/psychiatric: Germanica/Legio/LegioGermanica scrub ON (manic false-positive guard)');
+console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (banter allowlist excludes retard/retarded).`);
 
 // Anti-Indian / South-Asian racist slurs & degrading meme terms — no safe-context bypass; evasion-resistant compact scan.
 const INDIAN_ASIAN_SLUR_SUBSTRINGS = [
