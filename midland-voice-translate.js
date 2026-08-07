@@ -85,6 +85,10 @@ const DEEPGRAM_MODEL = String(process.env.DEEPGRAM_MODEL || 'nova-3').trim();
 
 const SILENCE_END_MS = Math.max(300, parseInt(process.env.MIDLAND_VOICE_SILENCE_MS || '550', 10) || 550);
 const MIN_PCM_BYTES = Math.max(32000, parseInt(process.env.MIDLAND_VOICE_MIN_PCM_BYTES || '64000', 10) || 64000);
+/** Hard cap on one shotcaller utterance capture (open-mic / never-silence). */
+const MAX_UTTERANCE_MS = Math.max(3000, parseInt(process.env.MIDLAND_VOICE_MAX_UTTERANCE_MS || '12000', 10) || 12000);
+/** Deepgram STT timeout */
+const STT_TIMEOUT_MS = Math.max(5000, parseInt(process.env.MIDLAND_VOICE_STT_TIMEOUT_MS || '20000', 10) || 20000);
 const LEAVE_DEBOUNCE_MS = Math.max(500, parseInt(process.env.MIDLAND_VOICE_LEAVE_DEBOUNCE_MS || '2500', 10) || 2500);
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true';
 
@@ -347,35 +351,59 @@ async function collectPcmFromUser(receiver, userId) {
   const decoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
   const chunks = [];
   decoder.on('data', (chunk) => chunks.push(chunk));
+
+  let timedOut = false;
+  const maxTimer = setTimeout(() => {
+    timedOut = true;
+    debug(`Utterance capture hit ${MAX_UTTERANCE_MS}ms cap for ${userId} — forcing end`);
+    try {
+      opusStream.destroy();
+    } catch {
+      /* ignore */
+    }
+    try {
+      decoder.destroy();
+    } catch {
+      /* ignore */
+    }
+  }, MAX_UTTERANCE_MS);
+
   try {
     await pipeline(opusStream, decoder);
   } catch (err) {
-    if (err?.code !== 'ERR_STREAM_PREMATURE_CLOSE') throw err;
+    if (err?.code !== 'ERR_STREAM_PREMATURE_CLOSE' && !timedOut) throw err;
+  } finally {
+    clearTimeout(maxTimer);
   }
-  return Buffer.concat(chunks);
+
+  const buf = Buffer.concat(chunks);
+  if (timedOut) log(`Capture capped at ${MAX_UTTERANCE_MS}ms → ${buf.length} bytes from ${userId}`);
+  return buf;
 }
 
 async function transcribeWav(wavBuffer, boothLangHint = '') {
-  const response = await deepgram.listen.v1.media.transcribeFile(wavBuffer, {
-    model: DEEPGRAM_MODEL,
-    smart_format: 'true',
-    punctuate: 'true',
-    detect_language: 'true',
-  });
-  const alt = response?.results?.channels?.[0]?.alternatives?.[0];
-  const transcript = String(alt?.transcript || '').trim();
-  const detected =
-    response?.results?.channels?.[0]?.detected_language
-    || alt?.languages?.[0]
-    || response?.metadata?.detected_language
-    || '';
-  const hint = normalizeLang(boothLangHint);
-  const language = normalizeLang(detected) || hint || '';
-  return {
-    transcript,
-    language,
-    confidence: Number(alt?.confidence || 0),
-  };
+  return withTimeout((async () => {
+    const response = await deepgram.listen.v1.media.transcribeFile(wavBuffer, {
+      model: DEEPGRAM_MODEL,
+      smart_format: 'true',
+      punctuate: 'true',
+      detect_language: 'true',
+    });
+    const alt = response?.results?.channels?.[0]?.alternatives?.[0];
+    const transcript = String(alt?.transcript || '').trim();
+    const detected =
+      response?.results?.channels?.[0]?.detected_language
+      || alt?.languages?.[0]
+      || response?.metadata?.detected_language
+      || '';
+    const hint = normalizeLang(boothLangHint);
+    const language = normalizeLang(detected) || hint || '';
+    return {
+      transcript,
+      language,
+      confidence: Number(alt?.confidence || 0),
+    };
+  })(), STT_TIMEOUT_MS, 'Deepgram STT');
 }
 
 async function translateText(text, sourceLangHint, targetCode) {
@@ -709,11 +737,14 @@ function startListeningToUser(connection, guild, userId) {
         debug(`Ignore non-shotcaller ${userId}`);
         return;
       }
-      debug(`Listening to shotcaller ${userId}`);
+      log(`Listening to shotcaller ${userId}`);
       const pcm = await collectPcmFromUser(connection.receiver, userId);
-      enqueueUtterance({ guild, userId, pcm });
+      log(`Captured ${pcm?.length || 0} bytes from shotcaller ${userId}`);
+      // Process while still holding the listener lock so a second speak cannot
+      // pile up behind a hung Deepgram/TTS job with no logs.
+      await processUtterance({ guild, userId, pcm });
     } catch (err) {
-      warn(`Listen failed for ${userId}:`, err.message || err);
+      warn(`Listen/pipeline failed for ${userId}:`, err.message || err);
     } finally {
       activeListeners.delete(userId);
     }
@@ -888,7 +919,7 @@ async function relayShotcall(guild, userId, transcript, sourceLang) {
 
 async function processUtterance({ guild, userId, pcm }) {
   if (!pcm || pcm.length < MIN_PCM_BYTES) {
-    debug(`Skip short utterance from ${userId} (${pcm?.length || 0} bytes)`);
+    log(`Skip short utterance from ${userId} (${pcm?.length || 0} bytes, need ≥${MIN_PCM_BYTES})`);
     return;
   }
   if (!(await memberHasShotcallerRole(guild, userId))) return;
@@ -897,9 +928,17 @@ async function processUtterance({ guild, userId, pcm }) {
   const boothLang = sc?.userId === String(userId) ? (sc.lang || '') : '';
 
   const wav = pcmToWav(pcm);
-  const { transcript, language } = await transcribeWav(wav, boothLang);
+  log(`STT sending ${(wav.length / 1024).toFixed(1)}KB wav for shotcaller ${userId}…`);
+  let transcript;
+  let language;
+  try {
+    ({ transcript, language } = await transcribeWav(wav, boothLang));
+  } catch (err) {
+    warn(`STT failed for ${userId}:`, err.message || err);
+    return;
+  }
   if (!transcript) {
-    debug(`Empty transcript for ${userId}`);
+    log(`Empty transcript for ${userId}`);
     return;
   }
 
