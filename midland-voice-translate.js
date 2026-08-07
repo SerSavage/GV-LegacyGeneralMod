@@ -724,6 +724,29 @@ function attachReceiver(connection, guild) {
     if (delivering || playing) return;
     void startListeningToUser(connection, guild, String(userId));
   });
+
+  // If someone is already marked speaking when we join/move, speaking "start"
+  // will not fire again until they stop and start — kick off listen now.
+  try {
+    for (const userId of speaking.users.keys()) {
+      if (String(userId) === String(clientRef?.user?.id)) continue;
+      if (delivering || playing) break;
+      void startListeningToUser(connection, guild, String(userId));
+    }
+  } catch {
+    /* older speaking maps */
+  }
+}
+
+function describeVoiceState(vs) {
+  if (!vs) return 'no-voice-state';
+  const flags = [];
+  if (vs.serverMute || vs.mute) flags.push('serverMute');
+  if (vs.selfMute) flags.push('selfMute');
+  if (vs.serverDeaf || vs.deaf) flags.push('serverDeaf');
+  if (vs.selfDeaf) flags.push('selfDeaf');
+  if (vs.suppress) flags.push('suppress');
+  return flags.length ? flags.join(',') : 'unmuted';
 }
 
 function startListeningToUser(connection, guild, userId) {
@@ -737,7 +760,8 @@ function startListeningToUser(connection, guild, userId) {
         debug(`Ignore non-shotcaller ${userId}`);
         return;
       }
-      log(`Listening to shotcaller ${userId}`);
+      const vs = guild.voiceStates.cache.get(userId);
+      log(`Listening to shotcaller ${userId} (${describeVoiceState(vs)})`);
       const pcm = await collectPcmFromUser(connection.receiver, userId);
       log(`Captured ${pcm?.length || 0} bytes from shotcaller ${userId}`);
       // Process while still holding the listener lock so a second speak cannot
@@ -986,6 +1010,8 @@ async function reconcileMidlandVoice(guild) {
     const inRightChannel = connection && connection.joinConfig?.channelId === sc.channelId;
     if (!inRightChannel) {
       log(`Follow shotcaller ${sc.userId} → ${sc.lang} (${sc.channelId})`);
+      const vs = guild.voiceStates.cache.get(sc.userId);
+      log(`Shotcaller voice flags: ${describeVoiceState(vs)}`);
       const conn = await joinChannel(guild, sc.channelId);
       if (conn) attachReceiver(conn, guild);
     } else {
