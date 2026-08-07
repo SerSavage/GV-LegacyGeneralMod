@@ -184,6 +184,8 @@ let reconcileTimer = null;
 let kickFollowTimer = null;
 /** After leaveVoice(), ignore “bot left booths” recovery until this time. */
 let expectingFullLeaveUntil = 0;
+let reconcilePromise = null;
+let lastShotcallerLogKey = '';
 
 function beginVoiceHop() {
   intentionalLeave = true;
@@ -429,10 +431,16 @@ async function findActiveShotcaller(guild) {
   if (found.length > 1) {
     warn(`Multiple shotcallers in booths (${found.length}) — using ${found[0].userId}; only one allowed per event`);
   }
-  if (found[0]) {
-    log(`Shotcaller ${found[0].userId} in ${found[0].lang} (booths [${summary}])`);
+  const key = found[0] ? `${found[0].userId}:${found[0].channelId}` : '';
+  if (key !== lastShotcallerLogKey) {
+    lastShotcallerLogKey = key;
+    if (found[0]) {
+      log(`Shotcaller ${found[0].userId} in ${found[0].lang} (booths [${summary}])`);
+    } else {
+      log(`No shotcaller in language booths [${summary}]`);
+    }
   } else {
-    debug(`No shotcaller in language booths [${summary}]`);
+    debug(`Shotcaller scan [${summary}] key=${key || 'none'}`);
   }
   return found[0] || null;
 }
@@ -668,20 +676,24 @@ async function postTextToChannel(guild, channelId, content) {
   }
 }
 
+/** Discord's view of where the bot is — never trust joinConfig alone. */
+function getBotDiscordChannelId(guild) {
+  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
+  if (!botId) return null;
+  const vs = guild.voiceStates.cache.get(botId);
+  if (vs?.channelId) return String(vs.channelId);
+  const meCh = guild.members.me?.voice?.channelId;
+  if (meCh) return String(meCh);
+  return null;
+}
+
 /** Confirm the bot's Discord voice state is in the target channel (joinConfig alone is not enough). */
 async function waitUntilBotInChannel(guild, channelId, timeoutMs = 12_000) {
-  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
-  if (!botId) return false;
   const want = String(channelId);
   const start = Date.now();
 
   while (Date.now() - start < timeoutMs) {
-    const meCh = guild.members.me?.voice?.channelId;
-    if (meCh && String(meCh) === want) return true;
-
-    const cached = guild.voiceStates.cache.get(botId);
-    if (cached && String(cached.channelId || '') === want) return true;
-
+    if (getBotDiscordChannelId(guild) === want) return true;
     await sleep(200);
   }
   return false;
@@ -746,29 +758,37 @@ async function joinChannel(guild, channelId) {
 
       let connection = getVoiceConnection(guild.id);
 
-      // Already in the right channel
+      // Already in the right channel — only if Discord agrees (joinConfig Ready is not enough)
       if (
         connection
         && connection.state.status !== VoiceConnectionStatus.Destroyed
         && String(connection.joinConfig?.channelId) === wantId
       ) {
-        if (connection.state.status === VoiceConnectionStatus.Ready) {
-          const ok = await waitUntilBotInChannel(guild, wantId, 3_000);
-          if (ok || connection.state.status === VoiceConnectionStatus.Ready) {
-            connection.subscribe(audioPlayer);
-            endVoiceHop();
-            return connection;
+        const ok = await waitUntilBotInChannel(guild, wantId, 4_000);
+        if (ok) {
+          if (connection.state.status !== VoiceConnectionStatus.Ready) {
+            try {
+              await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+            } catch (err) {
+              warn('Wait Ready (confirmed channel) failed:', err.message || err);
+            }
           }
-        } else {
-          try {
-            await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-            connection.subscribe(audioPlayer);
-            endVoiceHop();
-            return connection;
-          } catch (err) {
-            warn('Wait Ready (same channel) failed:', err.message || err);
-          }
+          connection.subscribe(audioPlayer);
+          endVoiceHop();
+          log(`Already in voice ${LANG_BY_CHANNEL.get(wantId) || '?'} (${wantId})`);
+          return connection;
         }
+        warn(
+          `Stale voice connection claims ${LANG_BY_CHANNEL.get(wantId) || wantId}`
+          + ` but Discord has bot in ${getBotDiscordChannelId(guild) || 'none'} — recreating`,
+        );
+        try {
+          connection.destroy();
+        } catch {
+          /* ignore */
+        }
+        connection = null;
+        await sleep(400);
       }
 
       // Move existing Ready/Signalling connection via rejoin (updates joinConfig)
@@ -813,6 +833,7 @@ async function joinChannel(guild, channelId) {
         return null;
       }
 
+      log(`Joining voice ${channel.name} (${wantId})…`);
       connection = joinVoiceChannel({
         channelId: channel.id,
         guildId: guild.id,
@@ -834,9 +855,18 @@ async function joinChannel(guild, channelId) {
         return null;
       }
 
-      const confirmed = await waitUntilBotInChannel(guild, wantId, 10_000);
+      const confirmed = await waitUntilBotInChannel(guild, wantId, 12_000);
       if (!confirmed) {
-        warn(`Joined ${wantId} but voice state not confirmed yet — continuing`);
+        warn(
+          `Voice Ready for ${wantId} but Discord never showed bot there`
+          + ` (still ${getBotDiscordChannelId(guild) || 'none'}) — destroying`,
+        );
+        try {
+          connection.destroy();
+        } catch {
+          /* ignore */
+        }
+        return null;
       }
 
       connection.subscribe(audioPlayer);
@@ -1190,48 +1220,57 @@ async function drainQueue() {
 
 async function reconcileMidlandVoice(guild) {
   if (!ENABLED || !guild || String(guild.id) !== MIDLAND_EU_GUILD_ID) return;
+  if (reconcilePromise) return reconcilePromise;
 
-  unstickDeliveringIfNeeded('reconcile');
+  reconcilePromise = (async () => {
+    try {
+      unstickDeliveringIfNeeded('reconcile');
 
-  const sc = await findActiveShotcaller(guild);
-  const connection = getVoiceConnection(guild.id);
-  const botId = clientRef?.user?.id ? String(clientRef.user.id) : null;
-  const botVs = botId ? guild.voiceStates.cache.get(botId) : null;
-  const botChannelId = botVs?.channelId
-    ? String(botVs.channelId)
-    : (connection?.joinConfig?.channelId ? String(connection.joinConfig.channelId) : null);
+      const sc = await findActiveShotcaller(guild);
+      const connection = getVoiceConnection(guild.id);
+      // Discord truth only — joinConfig lying was why follow never retried
+      const botChannelId = getBotDiscordChannelId(guild);
+      const joinConfigId = connection?.joinConfig?.channelId
+        ? String(connection.joinConfig.channelId)
+        : null;
 
-  if (sc) {
-    cancelScheduledLeave();
-    // Never stay blocked while a shotcaller is live — always follow them
-    if (isKickCooldownActive()) {
-      clearKickCooldown();
-      log('Shotcaller active — cleared kick cooldown');
-    }
-    // Mid-TTS tour: only skip if delivering is fresh; stuck flag already cleared above
-    if (delivering) {
-      debug('Reconcile skipped — TTS tour in progress');
-      return;
-    }
+      if (sc) {
+        cancelScheduledLeave();
+        if (isKickCooldownActive()) {
+          clearKickCooldown();
+          log('Shotcaller active — cleared kick cooldown');
+        }
+        if (delivering) {
+          debug('Reconcile skipped — TTS tour in progress');
+          return;
+        }
 
-    const inRightChannel = botChannelId && botChannelId === String(sc.channelId);
-    if (!inRightChannel) {
-      log(`Reconcile: bot in ${botChannelId || 'none'} — need ${sc.lang} (${sc.channelId})`);
-      await forceFollowShotcaller(guild, 'Reconcile');
-    } else {
-      if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
-        attachReceiver(connection, guild);
-      } else {
-        await forceFollowShotcaller(guild, 'Reconcile missing connection');
+        const inRightChannel = botChannelId && botChannelId === String(sc.channelId);
+        if (!inRightChannel) {
+          log(
+            `Reconcile: bot Discord=${botChannelId || 'none'}`
+            + ` joinConfig=${joinConfigId || 'none'}`
+            + ` — need ${sc.lang} (${sc.channelId})`,
+          );
+          await forceFollowShotcaller(guild, 'Reconcile');
+        } else if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
+          attachReceiver(connection, guild);
+        } else {
+          await forceFollowShotcaller(guild, 'Reconcile missing connection');
+        }
+        return;
       }
-    }
-    return;
-  }
 
-  if (connection || (botChannelId && LANG_CHANNEL_IDS.has(botChannelId))) {
-    log('No shotcaller in language booths — scheduling leave');
-    scheduleLeaveIfNoShotcaller(guild);
-  }
+      if (connection || (botChannelId && LANG_CHANNEL_IDS.has(botChannelId))) {
+        log('No shotcaller in language booths — scheduling leave');
+        scheduleLeaveIfNoShotcaller(guild);
+      }
+    } finally {
+      reconcilePromise = null;
+    }
+  })();
+
+  return reconcilePromise;
 }
 
 async function onVoiceStateUpdate(oldState, newState) {
