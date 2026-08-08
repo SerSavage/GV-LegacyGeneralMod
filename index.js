@@ -687,6 +687,7 @@ const SAFE_CONTEXT_BASE = [
   'god of war',
   'midland', 'midlanders', 'azebia', 'azebs', 'nordheim', 'ismir', 'ismirs', 'sangmar', 'sangmir', 'sangarians',
   'empire of azebia', 'azebian', 'midlandic', 'sangmar empire',
+  'twinfall', 'midland day', 'non-loot', 'non loot',
   'forefather', 'greatfather', 'khagan', 'zenith',
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
   'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
@@ -2687,7 +2688,18 @@ function isMessageInGvGeneral(message) {
 }
 
 /** Same trigger chain as gv-general moderation holds, without Soon/Miaow/Poor-Savage side effects. */
-function detectStandardModerationTrigger(message, gvModerationText) {
+function hasMidlandEventGameplayContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  const lower = stripDiacritics(text.toLowerCase());
+  const hasMidland = /\bmidland(?:ers?)?\b/i.test(lower);
+  const hasFactionOrPoi =
+    /\b(?:ismirs?|sangmars?|sangmirs?|sangarians?|azebs?|azebians?|nordheims?|twinfall)\b/i.test(lower);
+  const hasEventTalk =
+    /\b(?:events?|day|loots?|non-?loot|lz|reqs?|shotcalls?|capped|capping|siege|meetings?|organising|organizing|planning)\b/i.test(lower);
+  return hasMidland && (hasFactionOrPoi || hasEventTalk);
+}
+
+function detectStandardModerationTrigger(message, gvModerationText, options = {}) {
   const csamScanText = getMessageTextForCsamScan(message);
   if (csamScanText && hasCsamGroomingTrigger(csamScanText)) return 'csam-grooming';
   if (messageHasBlockedMediaId(message)) return 'blocked-media';
@@ -2700,7 +2712,16 @@ function detectStandardModerationTrigger(message, gvModerationText) {
   if (MULTILINGUAL_BANTER_BYPASS && isPrimarilyNonEnglishCasualChat(gvModerationText)) return null;
   if (hasHarassmentRaceBaitEvasion(gvModerationText, message.author.id)) return 'harassment-evasion';
   if (hasStereotypeRaceReligionRedirect(gvModerationText)) return 'stereotype-race-religion';
-  if (hasMedicalPsychiatricInsult(gvModerationText)) return 'medical-psych';
+
+  // Midland nation-discussion: skip medical-psych when this is clearly Midland event talk
+  // (safe-context would have allowed it after medical, but "bait Ismirs" dies on tism glue first).
+  const skipMedicalForMidlandEvent =
+    options.midlandSoftMedical
+    || (options.preferSafeContextBeforeMedical && hasMidlandEventGameplayContext(gvModerationText));
+  if (!skipMedicalForMidlandEvent || !hasSafeContext(gvModerationText)) {
+    if (hasMedicalPsychiatricInsult(gvModerationText)) return 'medical-psych';
+  }
+
   if (hasDangerFramingTargetPlayersOrHumans(gvModerationText)) return 'danger-framing';
   if (hasSafeContext(gvModerationText)) return null;
   if (hasGeopoliticalHardRedirect(gvModerationText)) return 'geopolitical';
@@ -2885,7 +2906,10 @@ async function handleMidlandEuModeration(message, reason) {
 async function handleMidlandEuMessage(message) {
   const rawGvContent = message.content ? String(message.content) : '';
   const gvModerationText = stripOuterQuotesForGeneral(rawGvContent.trim()) || rawGvContent;
-  const reason = detectStandardModerationTrigger(message, gvModerationText);
+  const reason = detectStandardModerationTrigger(message, gvModerationText, {
+    preferSafeContextBeforeMedical: true,
+    midlandSoftMedical: hasMidlandEventGameplayContext(gvModerationText),
+  });
   if (reason) {
     await handleMidlandEuModeration(message, reason);
   }
@@ -3750,6 +3774,7 @@ client.once('ready', () => {
     console.log(
       `Midland EU moderation: guild ${MIDLAND_EU_GUILD_ID}; channels ${[...MIDLAND_EU_MOD_CHANNEL_IDS].join(', ')} → delete + warn DM + <#${MIDLAND_EU_OFFENSE_LOG_CHANNEL_ID}>`,
     );
+    console.log('Midland EU: event-context soft medical guard ON (bait+Ismirs / Midland Day false-positive fix)');
   }
   void midlandVoiceTranslate.init(client);
   console.log(`Trigger channel (gv-general): ${TRIGGER_CHANNEL_ID} — ensure Message Content Intent is ON in Developer Portal`);
