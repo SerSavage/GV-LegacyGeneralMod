@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Options, Partials, ChannelType, SlashCommandBuilder, AttachmentBuilder, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -2639,14 +2639,147 @@ function detectStandardModerationTrigger(message, gvModerationText) {
   return null;
 }
 
+/** Full dump of a Midland message before delete (text + attachments + stickers + embeds). */
+function collectMidlandDeletedMessageDump(message) {
+  const lines = [];
+  const raw = message.content != null ? String(message.content) : '';
+  lines.push('--- Message content ---');
+  lines.push(raw.length ? raw : '(no text)');
+
+  if (message.attachments?.size) {
+    lines.push('');
+    lines.push(`--- Attachments (${message.attachments.size}) ---`);
+    for (const att of message.attachments.values()) {
+      const meta = [
+        att.name || 'file',
+        att.contentType || 'unknown-type',
+        typeof att.size === 'number' ? `${att.size}B` : null,
+      ].filter(Boolean).join(' · ');
+      lines.push(`${meta}`);
+      if (att.url) lines.push(String(att.url));
+      if (att.proxyURL && att.proxyURL !== att.url) lines.push(`proxy: ${att.proxyURL}`);
+    }
+  }
+
+  if (message.stickers?.size) {
+    lines.push('');
+    lines.push(`--- Stickers (${message.stickers.size}) ---`);
+    for (const sticker of message.stickers.values()) {
+      lines.push(`${sticker.name || 'sticker'} (\`${sticker.id}\`)`);
+    }
+  }
+
+  if (message.embeds?.length) {
+    lines.push('');
+    lines.push(`--- Embeds (${message.embeds.length}) ---`);
+    message.embeds.forEach((embed, i) => {
+      lines.push(`[embed ${i + 1}]`);
+      if (embed.title) lines.push(`title: ${embed.title}`);
+      if (embed.url) lines.push(`url: ${embed.url}`);
+      if (embed.description) lines.push(String(embed.description));
+      if (embed.author?.name) lines.push(`author: ${embed.author.name}`);
+      for (const field of embed.fields || []) {
+        lines.push(`${field.name}: ${field.value}`);
+      }
+      if (embed.footer?.text) lines.push(`footer: ${embed.footer.text}`);
+      if (embed.image?.url) lines.push(`image: ${embed.image.url}`);
+      if (embed.thumbnail?.url) lines.push(`thumbnail: ${embed.thumbnail.url}`);
+      if (embed.video?.url) lines.push(`video: ${embed.video.url}`);
+    });
+  }
+
+  if (message.mentions?.everyone) {
+    lines.push('');
+    lines.push('(message mentioned @everyone / @here)');
+  }
+
+  return lines.join('\n');
+}
+
+function chunkTextForDiscord(text, maxLen = 1900) {
+  const s = String(text || '');
+  if (!s.length) return ['(empty)'];
+  const chunks = [];
+  for (let i = 0; i < s.length; i += maxLen) {
+    chunks.push(s.slice(i, i + maxLen));
+  }
+  return chunks;
+}
+
+async function postMidlandOffenseLog(logChannel, { reason, author, channelRef, messageId, dump }) {
+  const header = [
+    `**Offense** — \`${reason}\``,
+    `User: ${author.toString()} (\`${author.id}\`)`,
+    `Channel: ${channelRef}`,
+    `Message ID: \`${messageId}\``,
+    `Logged chars: ${dump.length}`,
+  ].join('\n');
+
+  const combined = `${header}\n\n${dump}`;
+  const files = [];
+  // Always attach a full .txt when the dump would not fit cleanly in one message
+  if (combined.length > 2000 || dump.length > 1800) {
+    files.push(new AttachmentBuilder(Buffer.from(dump, 'utf8'), {
+      name: `midland-offense-${messageId}.txt`,
+    }));
+  }
+
+  if (combined.length <= 2000) {
+    await logChannel.send({
+      content: combined,
+      files,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  // Header + as much content as possible in an embed (4096), full dump in file + chunked follow-ups
+  const embed = new EmbedBuilder()
+    .setTitle(`Offense — ${String(reason).slice(0, 200)}`)
+    .setColor(0xb03a2e)
+    .addFields(
+      { name: 'User', value: `${author.toString()} (\`${author.id}\`)`.slice(0, 1024), inline: false },
+      { name: 'Channel', value: String(channelRef).slice(0, 1024), inline: false },
+      { name: 'Message ID', value: `\`${messageId}\``, inline: true },
+      { name: 'Logged chars', value: String(dump.length), inline: true },
+    )
+    .setDescription(dump.length <= 4096 ? dump : `${dump.slice(0, 4080)}\n… _(truncated — see attachment + follow-ups)_`)
+    .setTimestamp(new Date());
+
+  if (!files.length) {
+    files.push(new AttachmentBuilder(Buffer.from(dump, 'utf8'), {
+      name: `midland-offense-${messageId}.txt`,
+    }));
+  }
+
+  await logChannel.send({
+    embeds: [embed],
+    files,
+    allowedMentions: { parse: [] },
+  });
+
+  // Follow-ups so mods can read the full text in-channel without opening the file
+  if (dump.length > 4096) {
+    const chunks = chunkTextForDiscord(dump, 1900);
+    for (let i = 0; i < chunks.length; i++) {
+      await logChannel.send({
+        content: `_(deleted message part ${i + 1}/${chunks.length})_\n${chunks[i]}`.slice(0, 2000),
+        allowedMentions: { parse: [] },
+      });
+    }
+  }
+}
+
 async function handleMidlandEuModeration(message, reason) {
-  const raw = message.content ? String(message.content).trim() : '';
-  const snippet = raw ? raw.slice(0, 500) + (raw.length > 500 ? '…' : '') : '(no text)';
+  // Capture everything before delete — attachment CDN URLs die after the message is gone
+  const dump = collectMidlandDeletedMessageDump(message);
   const ch = message.channel;
   const channelRef =
     ch && typeof ch.isThread === 'function' && ch.isThread()
       ? `<#${message.channelId}> (thread under <#${ch.parentId}>)`
       : `<#${message.channelId}>`;
+  const author = message.author;
+  const messageId = message.id;
 
   try {
     await message.delete();
@@ -2655,32 +2788,27 @@ async function handleMidlandEuModeration(message, reason) {
   }
 
   try {
-    await message.author.send(MIDLAND_EU_WARN_DM);
+    await author.send(MIDLAND_EU_WARN_DM);
   } catch (err) {
-    console.warn(`[midland-eu] warn DM failed for ${message.author.tag}:`, err.message);
+    console.warn(`[midland-eu] warn DM failed for ${author.tag}:`, err.message);
   }
 
   try {
     const logChannel = await message.client.channels.fetch(MIDLAND_EU_OFFENSE_LOG_CHANNEL_ID);
     if (logChannel?.isTextBased()) {
-      const logBody = [
-        `**Offense** — \`${reason}\``,
-        `User: ${message.author.toString()} (\`${message.author.id}\`)`,
-        `Channel: ${channelRef}`,
-        `Message ID: \`${message.id}\``,
-        '',
-        snippet,
-      ].join('\n');
-      await logChannel.send({
-        content: logBody.length > 2000 ? logBody.slice(0, 1997) + '…' : logBody,
-        allowedMentions: { parse: [] },
+      await postMidlandOffenseLog(logChannel, {
+        reason,
+        author,
+        channelRef,
+        messageId,
+        dump,
       });
     }
   } catch (err) {
     console.error('[midland-eu] offense log failed:', err.message);
   }
 
-  console.log(`[midland-eu] ${message.author.tag} — ${reason} (#${message.channelId})`);
+  console.log(`[midland-eu] ${author.tag} — ${reason} (#${message.channelId}) [${dump.length} chars logged]`);
 }
 
 async function handleMidlandEuMessage(message) {
