@@ -1307,9 +1307,8 @@ const MEDICAL_PSYCH_INSULT_SUBSTRINGS = [
 ].map(s => s.toLowerCase());
 
 /**
- * Midland house / Legio names embed "manic" (Germanica). Strip them (incl. leet
- * G3rm4nica → germanica via normalizeForMatch) before medical-psych substring scan.
- * Still flags real insults like "you're manic".
+ * Midland house / Legio names embed "manic" (Germanica). Faction names can glue into
+ * false psych hits too ("bait Ismirs" → baitismirs → "tism"). Scrub before scan.
  */
 function scrubMidlandHouseNamesForPsychScan(text) {
   let t = String(text || '');
@@ -1322,10 +1321,19 @@ function scrubMidlandHouseNamesForPsychScan(text) {
   t = t.replace(/germanica/gi, ' ');
   t = t.replace(/germanic/gi, ' ');
   t = t.replace(/\blegio\b/gi, ' ');
+  // Midland EU / GV faction & realm names (word boundaries on spaced text)
+  t = t.replace(/\bismirs?\b/gi, ' ');
+  t = t.replace(/\bsangm[ae]rs?\b/gi, ' ');
+  t = t.replace(/\bsangarians?\b/gi, ' ');
+  t = t.replace(/\bmidlanders?\b/gi, ' ');
+  t = t.replace(/\bmidland\b/gi, ' ');
+  t = t.replace(/\bazebians?\b/gi, ' ');
+  t = t.replace(/\bazebs?\b/gi, ' ');
+  t = t.replace(/\bnordheims?\b/gi, ' ');
   return t;
 }
 
-/** Letters-only compact form with Midland house/legio names removed (leet-safe). */
+/** Letters-only compact form with Midland house/legio/faction names removed (leet-safe). */
 function compactWithoutMidlandHouseNames(text) {
   const compact = normalizeForMatch(stripDiacritics(String(text || '').toLowerCase()))
     .replace(/[^a-z]/g, '');
@@ -1333,7 +1341,30 @@ function compactWithoutMidlandHouseNames(text) {
     .replace(/legiogermanica/g, '')
     .replace(/germanica/g, '')
     .replace(/germanic/g, '')
-    .replace(/legio/g, '');
+    .replace(/legio/g, '')
+    .replace(/ismirs?/g, '')
+    .replace(/sangmars?/g, '')
+    .replace(/sangmirs?/g, '')
+    .replace(/sangarians?/g, '')
+    .replace(/midlanders?/g, '')
+    .replace(/midland/g, '')
+    .replace(/azebians?/g, '')
+    .replace(/azebs?/g, '')
+    .replace(/nordheims?/g, '');
+}
+
+/** "tism" autism shorthand — token-only so "bait Ismirs" cannot span into baitismirs. */
+function tokenHasTismInsult(text) {
+  const tokens = normalizeForMatch(stripDiacritics(String(text || '').toLowerCase()))
+    .split(/[^a-z0-9]+/)
+    .map((t) => t.replace(/[^a-z]/g, ''))
+    .filter(Boolean);
+  for (const t of tokens) {
+    if (t === 'tism' || t === 'tisms') return true;
+    // autism / autistic (autist* also caught by MEDICAL substring list)
+    if (t.startsWith('auti') && t.includes('tism')) return true;
+  }
+  return false;
 }
 
 function hasMedicalPsychiatricInsult(text) {
@@ -1358,6 +1389,12 @@ function hasMedicalPsychiatricInsult(text) {
       continue;
     }
 
+    // tism: never full-message compact (bait+Ismirs → baitismirs)
+    if (subCompact === 'tism') {
+      if (tokenHasTismInsult(text)) return true;
+      continue;
+    }
+
     if (lower.includes(sub)) return true;
     if (subNorm.length >= 3 && normalized.includes(subNorm)) return true;
     if (subCompact.length >= 3 && compactNoHouse.includes(subCompact)) return true;
@@ -1367,7 +1404,7 @@ function hasMedicalPsychiatricInsult(text) {
   }
   return false;
 }
-console.log('Medical/psychiatric: Germanica/Legio/LegioGermanica scrub ON (manic false-positive guard)');
+console.log('Medical/psychiatric: Germanica/Legio + Midland faction scrub ON (manic/tism false-positive guard)');
 console.log(`Medical/psychiatric insult substrings: ${MEDICAL_PSYCH_INSULT_SUBSTRINGS.length} (banter allowlist excludes retard/retarded).`);
 
 // Anti-Indian / South-Asian racist slurs & degrading meme terms — no safe-context bypass; evasion-resistant compact scan.
