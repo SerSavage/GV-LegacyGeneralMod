@@ -690,6 +690,8 @@ const SAFE_CONTEXT_BASE = [
   'forefather', 'greatfather', 'khagan', 'zenith',
   'crafting', 'economy', 'bosses', 'recipes', 'resources', 'shields', 'glory', 'reputation',
   'guild', 'siege', 'territory', 'non-targeting', 'loot', 'medieval', 'mmorpg',
+  // Midland / GV party + shotcall jargon (abbey is also a religion word in words.txt)
+  'abbey party', 'req for south', 'req for north', 'call req', 'shotcall', 'shotcaller',
   // Character attributes (words.txt may list "constitution" as political; standalone stat posts are game talk).
   'constitution', 'strength', 'dexterity', 'agility', 'vitality', 'endurance',
   // Gloria Victis wikis (https://wiki.gloriavictisgame.com/ + Fandom) — base terms; deeper curated phrases live in safe-context.txt
@@ -1709,9 +1711,9 @@ function isPoliticalOrReligionTerm(word) {
       if (re.test(w)) return true;
       continue;
     }
+    // Word contains the full leader name (e.g. "putins")
     if (w.includes(leader)) return true;
-    // Only match word-as-substring-of-leader when word is at least 3 chars (avoid "i", "in", "an" matching "putin", "bin salman", etc.)
-    if (w.length >= 3 && leader.includes(w)) return true;
+    // NEVER use leader.includes(word): "any" ⊂ "netanyahu", "son" ⊂ "johnson", etc.
   }
   return false;
 }
@@ -2038,6 +2040,36 @@ function shouldSkipReligionGodToken(fullText, word) {
   return false;
 }
 
+/**
+ * "abbey" is in words.txt (monastery), but Midland/GV often means a party/guild name
+ * ("abbey party", req calls). Skip unless clearly religious abbey context.
+ */
+function shouldSkipReligionAbbeyToken(fullText, word) {
+  const w = (word || '').toLowerCase();
+  if (w !== 'abbey' && w !== 'abbeys' && w !== 'abbot') return false;
+  const lower = stripDiacritics(fullText.toLowerCase());
+  if (/\b(monk|monks|monastery|monasteries|cathedral|chapel|nun|nuns|vatican|pilgrim|pilgrimage|catholic|cistercian|benedictine)\b/i.test(lower)) {
+    return false;
+  }
+  if (hasGameplayCombatContext(fullText)) return true;
+  if (/\b(party|parties|guild|guilds|req|shotcall|shotcaller|siege|raid|north|south|discord|nation|nations|faction)\b/i.test(lower)) {
+    return true;
+  }
+  return false;
+}
+
+/** Bare "war" is too common (game PvP + "declare a war on me"). Real conflict uses harder terms. */
+function shouldSkipReligionWarToken(fullText, word) {
+  const w = (word || '').toLowerCase();
+  if (w !== 'war' && w !== 'wars') return false;
+  const lower = stripDiacritics(fullText.toLowerCase());
+  if (/\bwar\s+crimes?\b/i.test(lower)) return false;
+  if (/\bwar\s+(?:in|for|over)\s+(?:the\s+)?(?:middle[\s-]+east|ukraine|gaza|israel|iraq|iran|syria)\b/i.test(lower)) {
+    return false;
+  }
+  return true;
+}
+
 // Combined: should we treat message as religion/politics (ratio, ideological phrase, or obvious religion/politics phrase)
 function shouldTriggerReligionPolitics(text) {
   if (!text || typeof text !== 'string') return false;
@@ -2068,7 +2100,7 @@ const REGION_OR_SERVER_ZONE_WORDS = new Set([
 // danger / dangerous — common in GV (NPCs, nations, combat); not political by themselves (see hasGameDangerLoreContext).
 // constitution / strength / dexterity — GV character attributes; words.txt may list "constitution" as political otherwise.
 const TRIGGER_WORD_IGNORE = new Set([
-  ...['good', 'goods', 'mod', 'mods', 'nation', 'nations', 'danger', 'dangerous'].map((w) => w.toLowerCase()),
+  ...['good', 'goods', 'mod', 'mods', 'nation', 'nations', 'danger', 'dangerous', 'war', 'wars'].map((w) => w.toLowerCase()),
   ...GV_CHARACTER_STAT_WORDS,
   ...REGION_OR_SERVER_ZONE_WORDS,
 ]);
@@ -2108,6 +2140,8 @@ function isMostlyReligionPolitics(text) {
   for (const w of words) {
     if (shouldSkipPoliticalDemonymForServerHop(text, w)) continue;
     if (shouldSkipReligionGodToken(text, w)) continue;
+    if (shouldSkipReligionAbbeyToken(text, w)) continue;
+    if (shouldSkipReligionWarToken(text, w)) continue;
     if (wordMatchesTriggerWord(w) || wordContainsGoy(w)) triggerCount++;
   }
   const ratio = triggerCount / words.length;
